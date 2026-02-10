@@ -1,0 +1,15 @@
+# Local ignores
+__pycache__/
+*.py[cod]
+node_modules/
+dist/
+build/
+release/
+out/
+*.log
+*.tmp
+.DS_Store
+*.db
+*.bat
+*.spec
+Makefile

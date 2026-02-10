@@ -1,0 +1,41 @@
+{
+  "extends": null,
+  "files": [
+    "dist/**/*",
+    "dist-main/**/*",
+    "node_modules/**/*"
+  ],
+  "directories": {
+    "buildResources": "assets"
+  },
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      },
+      {
+        "target": "portable",
+        "arch": [
+          "x64"
+        ]
+      }
+    ],
+    "icon": "assets/icon.png"
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "Sena Debug Dashboard",
+    "installerIcon": "assets/icon.png",
+    "uninstallerIcon": "assets/icon.png",
+    "installerHeaderIcon": "assets/icon.png"
+  },
+  "portable": {
+    "artifactName": "Behind The Sena.exe"
+  }
+}
