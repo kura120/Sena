@@ -4,6 +4,7 @@
 from typing import AsyncGenerator, Optional
 
 from src.api.websocket.manager import WebSocketManager, ws_manager
+from src.core.constants import ProcessingStage
 from src.core.sena import Sena
 from src.core.telemetry import TelemetryCollector
 from src.core.telemetry import get_telemetry as _get_telemetry
@@ -13,6 +14,13 @@ from src.database.repositories.extension_repo import ExtensionRepository
 from src.database.repositories.memory_repo import MemoryRepository
 from src.memory.manager import MemoryManager
 from src.utils.logger import logger
+
+
+async def _ws_stage_callback(stage: ProcessingStage, details: str = "") -> None:
+    """Bridge Sena processing stages to WebSocket broadcast."""
+    stage_str = stage.value if isinstance(stage, ProcessingStage) else str(stage)
+    await ws_manager.broadcast_processing_update(stage_str, details)
+
 
 # Global Sena instance
 _sena_instance: Optional[Sena] = None
@@ -27,6 +35,8 @@ async def get_sena() -> Sena:
         try:
             _sena_instance = Sena()
             await _sena_instance.initialize()
+            _sena_instance.set_stage_callback(_ws_stage_callback)
+            logger.info("Sena stage callback wired to WebSocket manager.")
             logger.info(f"Sena instance initialized successfully. Is initialized: {_sena_instance.is_initialized}")
         except Exception as e:
             logger.error(f"Failed to initialize Sena instance: {type(e).__name__}: {e}", exc_info=True)
