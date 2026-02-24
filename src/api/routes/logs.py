@@ -186,10 +186,12 @@ async def summarize_logs(body: SummarizeRequest) -> dict:
 
     summary = ""
     try:
-        from src.llm.manager import LLMManager  # local import to avoid circular dep
+        from src.api.deps import get_sena  # reuse the already-initialized global instance
 
-        llm = LLMManager.get_instance()
-        raw = await llm.generate_simple(prompt=prompt, max_tokens=60)
+        sena = await get_sena()
+        if sena._llm_manager is None:
+            raise RuntimeError("LLM manager not initialized")
+        raw = await sena._llm_manager.generate_simple(prompt=prompt, max_tokens=60)
         summary = raw.strip().strip('"').strip("'")
     except Exception as e:
         logger.warning(f"Log summarization failed: {e}")
