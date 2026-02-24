@@ -1,6 +1,14 @@
 @import "tailwindcss";
 
-html,
+html {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  /* Do NOT set overflow:hidden on html — it clips position:fixed resize handles */
+  background: transparent;
+  color: #f8fafc;
+}
+
 body,
 #root {
   width: 100%;
@@ -34,9 +42,22 @@ body {
 /* Electron window dragging */
 .drag {
   -webkit-app-region: drag;
+  user-select: none;
+  /* Prevent text-cursor appearing while dragging the title bar */
+  cursor: default;
 }
 
 .no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* Every interactive element nested inside a .drag region must opt out
+   so clicks reach the element instead of being swallowed by the drag handler */
+.drag button,
+.drag input,
+.drag select,
+.drag textarea,
+.drag a {
   -webkit-app-region: no-drag;
 }
 
