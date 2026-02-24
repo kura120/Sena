@@ -30,8 +30,11 @@ async def get_sena() -> Sena:
     """Get the global Sena instance."""
     global _sena_instance
 
-    if _sena_instance is None:
+    # Also retry if a previous attempt left an instance that never finished
+    # initializing (e.g. Ollama wasn't running at startup).
+    if _sena_instance is None or not _sena_instance.is_initialized:
         logger.info("Initializing Sena instance for API...")
+        _sena_instance = None  # clean slate so a partial object isn't reused
         try:
             _sena_instance = Sena()
             await _sena_instance.initialize()
@@ -39,6 +42,7 @@ async def get_sena() -> Sena:
             logger.info("Sena stage callback wired to WebSocket manager.")
             logger.info(f"Sena instance initialized successfully. Is initialized: {_sena_instance.is_initialized}")
         except Exception as e:
+            _sena_instance = None  # reset so the next request can retry
             logger.error(f"Failed to initialize Sena instance: {type(e).__name__}: {e}", exc_info=True)
             raise
 
