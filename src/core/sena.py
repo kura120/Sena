@@ -257,8 +257,10 @@ class Sena:
 
         try:
             # 1. Classify intent
+            # Note: LLMManager.classify_intent() already broadcasts the start + result
+            # notifications via its _notify_stage → stage_callback chain. We only set
+            # the stage on ctx here for internal tracking — no direct broadcast.
             ctx.set_stage(ProcessingStage.INTENT_CLASSIFICATION)
-            await self._on_stage_change(ctx.stage, "Analyzing intent...")
 
             ctx.intent_result = await self._llm_manager.classify_intent(user_input)
 
@@ -303,7 +305,8 @@ class Sena:
                         )
             else:
                 ctx.set_stage(ProcessingStage.LLM_PROCESSING)
-                await self._on_stage_change(ctx.stage, "Generating response...")
+                # Note: LLMManager.generate() broadcasts "Using {model} model..." via
+                # _notify_stage. No duplicate broadcast needed here.
 
                 ctx.response = await self._llm_manager.generate(
                     user_input=user_input,
