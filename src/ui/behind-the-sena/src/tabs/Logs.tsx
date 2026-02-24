@@ -1,6 +1,12 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { RefreshCw, Filter, ChevronRight, ChevronDown } from "lucide-react";
+import {
+  RefreshCw,
+  Filter,
+  ChevronRight,
+  ChevronDown,
+  Trash2,
+} from "lucide-react";
 import { fetchJson } from "../utils/api";
 import { TabLayout } from "../components/TabLayout";
 
@@ -36,6 +42,12 @@ export const Logs: React.FC = () => {
     "idle",
   );
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  // Map from group id → LLM-generated summary string (or "loading" sentinel)
+  const [groupSummaries, setGroupSummaries] = useState<Map<string, string>>(
+    new Map(),
+  );
+
+  const [clearing, setClearing] = useState(false);
 
   const userSelectedRef = useRef(false);
   const selectedSnapshotRef = useRef<LogEntry | null>(null);
@@ -106,42 +118,69 @@ export const Logs: React.FC = () => {
   };
 
   const groupChatLogs = (entries: LogEntry[]) => {
+    // ── Pass 1: bucket entries by session_id ─────────────────────────────────
+    // Walk oldest-first so timestamps are stable.
     const sorted = [...entries].sort((a, b) =>
       a.timestamp.localeCompare(b.timestamp),
     );
-    const grouped: LogEntry[] = [];
-    let current: {
-      start: LogEntry;
+
+    type Bucket = {
+      firstEntry: LogEntry;
+      lastEntry: LogEntry; // updated on every addToBucket — used for sort position
       entries: LogEntry[];
       metadata: LogMetadata;
       level: LogEntry["level"];
-      sessionId: string | null;
-    } | null = null;
+    };
 
-    const finalize = () => {
-      if (!current) return;
-      const summary = buildChatSummary(current.metadata);
-      grouped.push({
-        id: `chat-${current.sessionId || current.start.timestamp}`,
-        timestamp: current.start.timestamp,
-        level: current.level,
-        source: "chat",
-        message: summary,
-        event: "chat",
-        metadata: current.metadata,
-        kind: "chat",
-        children: current.entries,
-      });
-      current = null;
+    // Ordered list of session_ids (preserves first-seen order for output sort)
+    const sessionOrder: string[] = [];
+    const buckets = new Map<string, Bucket>();
+
+    // Key of the currently-open request bucket (null once COMPLETE/FAILED seen).
+    // Any pipeline log (memory, LLM, extensions) with no session_id of its own
+    // is absorbed into the active bucket while it is open.
+    let activeBucketId: string | null = null;
+
+    // Standalone entries that have no session affiliation
+    const standalones: LogEntry[] = [];
+
+    const getOrCreateBucket = (key: string, entry: LogEntry): Bucket => {
+      if (!buckets.has(key)) {
+        sessionOrder.push(key);
+        buckets.set(key, {
+          firstEntry: entry,
+          lastEntry: entry,
+          entries: [],
+          metadata: {},
+          level: entry.level,
+        });
+      }
+      return buckets.get(key)!;
+    };
+
+    const addToBucket = (bucket: Bucket, entry: LogEntry) => {
+      bucket.entries.push(entry);
+      bucket.lastEntry = entry; // always the most-recent child added
+      bucket.level = maxLevel(bucket.level, entry.level);
+      if (entry.metadata) {
+        bucket.metadata = { ...bucket.metadata, ...entry.metadata };
+      }
+      // Extract request payload from message text when present
+      if (entry.message.startsWith("Request payload:")) {
+        const rawPayload = entry.message.replace("Request payload:", "").trim();
+        const parsedPayload = parseRequestPayload(rawPayload);
+        bucket.metadata.request_payload = parsedPayload || rawPayload;
+      }
+      // Propagate session_id into the merged metadata
+      const sid = extractSessionId({ ...entry, metadata: bucket.metadata });
+      if (sid) {
+        bucket.metadata.session_id = sid;
+      }
     };
 
     for (const entry of sorted) {
-      const isChat = entry.source.includes("src.api.routes.chat");
-      if (!isChat) {
-        finalize();
-        grouped.push(entry);
-        continue;
-      }
+      // Attempt to resolve a session_id for this entry
+      const sessionId = extractSessionId(entry);
 
       const isStart = entry.message.includes("=== CHAT REQUEST START ===");
       const isEnd =
@@ -149,55 +188,114 @@ export const Logs: React.FC = () => {
         entry.message.includes("=== CHAT REQUEST FAILED ===");
 
       if (isStart) {
-        finalize();
-        current = {
-          start: entry,
-          entries: [entry],
-          metadata: {},
-          level: entry.level,
-          sessionId: null,
-        };
-      } else if (!current) {
-        current = {
-          start: entry,
-          entries: [entry],
-          metadata: {},
-          level: entry.level,
-          sessionId: null,
-        };
-      } else {
-        current.entries.push(entry);
+        // A START line may not yet carry a session_id in its own metadata —
+        // create a provisional bucket keyed by timestamp; it will be merged
+        // once the real session_id is seen.
+        const provisionalKey = sessionId ?? `provisional-${entry.timestamp}`;
+        activeBucketId = provisionalKey;
+        const bucket = getOrCreateBucket(provisionalKey, entry);
+        addToBucket(bucket, entry);
+        continue;
       }
 
-      if (current) {
-        current.level = maxLevel(current.level, entry.level);
-        if (entry.metadata) {
-          current.metadata = { ...current.metadata, ...entry.metadata };
+      if (sessionId) {
+        // Re-key a provisional bucket to the real session_id on first sight.
+        if (
+          activeBucketId &&
+          activeBucketId !== sessionId &&
+          buckets.has(activeBucketId) &&
+          !buckets.has(sessionId)
+        ) {
+          const provisionalBucket = buckets.get(activeBucketId)!;
+          buckets.delete(activeBucketId);
+          const idx = sessionOrder.indexOf(activeBucketId);
+          if (idx !== -1) sessionOrder[idx] = sessionId;
+          buckets.set(sessionId, provisionalBucket);
+          activeBucketId = sessionId;
         }
-        if (entry.message.startsWith("Request payload:")) {
-          const rawPayload = entry.message
-            .replace("Request payload:", "")
-            .trim();
-          const parsedPayload = parseRequestPayload(rawPayload);
-          current.metadata.request_payload = parsedPayload || rawPayload;
-        }
-        const sessionId = extractSessionId({
-          ...entry,
-          metadata: current.metadata,
-        });
-        if (sessionId) {
-          current.sessionId = sessionId;
-          current.metadata.session_id = sessionId;
-        }
+
+        const bucket = getOrCreateBucket(sessionId, entry);
+        addToBucket(bucket, entry);
+        activeBucketId = sessionId;
+
+        if (isEnd) activeBucketId = null;
+        continue;
       }
 
-      if (isEnd) {
-        finalize();
+      // No session_id — absorb into the active request window if one is open.
+      // This captures memory, LLM, extension, and embedding logs that share
+      // the same processing window but carry no explicit session_id.
+      if (activeBucketId && buckets.has(activeBucketId)) {
+        addToBucket(buckets.get(activeBucketId)!, entry);
+        if (isEnd) activeBucketId = null;
+        continue;
       }
+
+      // Truly standalone — not associated with any open session
+      standalones.push(entry);
     }
 
-    finalize();
-    return grouped.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+    // ── Pass 2: build output array ───────────────────────────────────────────
+    const output: LogEntry[] = [];
+
+    for (const sessionId of sessionOrder) {
+      const bucket = buckets.get(sessionId)!;
+      const summary = buildChatSummary(bucket.metadata);
+      const sortedChildren = [...bucket.entries].sort((a, b) =>
+        a.timestamp.localeCompare(b.timestamp),
+      );
+      output.push({
+        id: `chat-group-${sessionId}`,
+        timestamp: bucket.firstEntry.timestamp, // display: when request opened
+        level: bucket.level,
+        source: "chat",
+        message: summary,
+        event: "chat",
+        metadata: {
+          ...bucket.metadata,
+          _lastChildTimestamp: bucket.lastEntry.timestamp,
+        },
+        kind: "chat",
+        children: sortedChildren,
+      });
+    }
+
+    // Append standalones
+    for (const entry of standalones) {
+      output.push(entry);
+    }
+
+    // Sort by most-recent activity: groups float by their last child's
+    // timestamp so a completed request appears at the correct recency position.
+    return output.sort((a, b) => {
+      const aTime =
+        a.kind === "chat" && (a.metadata as any)?._lastChildTimestamp
+          ? ((a.metadata as any)._lastChildTimestamp as string)
+          : a.timestamp;
+      const bTime =
+        b.kind === "chat" && (b.metadata as any)?._lastChildTimestamp
+          ? ((b.metadata as any)._lastChildTimestamp as string)
+          : b.timestamp;
+      return bTime.localeCompare(aTime);
+    });
+  };
+
+  const clearLogs = async () => {
+    if (!window.confirm("Clear all logs? This cannot be undone.")) return;
+    setClearing(true);
+    try {
+      await fetchJson("/api/v1/logs/clear", { method: "POST" });
+      setLogs([]);
+      setSelectedId(null);
+      setExpandedIds(new Set());
+      setGroupSummaries(new Map());
+      userSelectedRef.current = false;
+      selectedSnapshotRef.current = null;
+    } catch (e) {
+      console.error("Failed to clear logs:", e);
+    } finally {
+      setClearing(false);
+    }
   };
 
   async function fetchLogs() {
@@ -317,6 +415,30 @@ export const Logs: React.FC = () => {
     }
   };
 
+  const fetchGroupSummary = useCallback(async (group: LogEntry) => {
+    if (!group.children || group.children.length === 0) return;
+    // Mark as loading so we don't fire a second request
+    setGroupSummaries((prev) => {
+      if (prev.has(group.id)) return prev;
+      return new Map(prev).set(group.id, "__loading__");
+    });
+    try {
+      const messages = group.children.map((c) => c.message);
+      const data = await fetchJson<{ summary?: string }>(
+        "/api/v1/logs/summarize",
+        {
+          method: "POST",
+          body: { messages },
+        },
+      );
+      const summary = data.summary?.trim() || group.message;
+      setGroupSummaries((prev) => new Map(prev).set(group.id, summary));
+    } catch {
+      // Fallback: keep the original message
+      setGroupSummaries((prev) => new Map(prev).set(group.id, group.message));
+    }
+  }, []);
+
   const toggleExpand = (id: string) => {
     setExpandedIds((prev) => {
       const next = new Set(prev);
@@ -324,6 +446,11 @@ export const Logs: React.FC = () => {
         next.delete(id);
       } else {
         next.add(id);
+        // Trigger lazy summary fetch when first expanding a group
+        const group = logs.find((l) => l.id === id);
+        if (group && (group.children?.length ?? 0) > 0) {
+          void fetchGroupSummary(group);
+        }
       }
       return next;
     });
@@ -376,6 +503,18 @@ export const Logs: React.FC = () => {
               </select>
             </div>
 
+            {/* Clear logs */}
+            <button
+              onClick={() => void clearLogs()}
+              disabled={clearing || loading}
+              title="Clear all logs"
+              className="p-1 bg-slate-800 border border-slate-700 text-red-400 rounded hover:bg-red-500/10 hover:border-red-500/50 transition disabled:opacity-50"
+            >
+              <Trash2
+                className={`w-4 h-4 ${clearing ? "animate-pulse" : ""}`}
+              />
+            </button>
+
             {/* Manual refresh */}
             <button
               onClick={fetchLogs}
@@ -409,6 +548,14 @@ export const Logs: React.FC = () => {
                     const isGrouped = (msg.children?.length ?? 0) > 0;
                     const isExpanded = expandedIds.has(msg.id);
                     const isSelected = msg.id === selectedId;
+                    const rawSummary = isGrouped
+                      ? groupSummaries.get(msg.id)
+                      : undefined;
+                    const isSummaryLoading = rawSummary === "__loading__";
+                    const displayMessage =
+                      isGrouped && rawSummary && !isSummaryLoading
+                        ? rawSummary
+                        : msg.message;
 
                     return (
                       <React.Fragment key={msg.id}>
@@ -475,8 +622,17 @@ export const Logs: React.FC = () => {
                                   </span>
                                 )}
                               </div>
-                              <div className="mt-1 text-xs text-slate-200 font-mono break-words">
-                                {truncate(msg.message)}
+                              <div className="mt-1 text-xs text-slate-200 font-mono break-words flex items-center gap-1.5">
+                                {isSummaryLoading ? (
+                                  <>
+                                    <span className="inline-block w-1.5 h-1.5 rounded-full bg-purple-400/60 animate-pulse flex-shrink-0" />
+                                    <span className="text-slate-400 italic">
+                                      Summarizing…
+                                    </span>
+                                  </>
+                                ) : (
+                                  truncate(displayMessage)
+                                )}
                               </div>
                             </button>
                           </div>
