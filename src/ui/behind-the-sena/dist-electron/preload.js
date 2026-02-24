@@ -9,6 +9,8 @@ electron_1.contextBridge.exposeInMainWorld("sena", {
     closeWindow: (windowId) => electron_1.ipcRenderer.invoke("close-window", windowId),
     minimizeWindow: () => electron_1.ipcRenderer.invoke("minimize-window"),
     maximizeWindow: () => electron_1.ipcRenderer.invoke("maximize-window"),
+    startResize: (dir) => electron_1.ipcRenderer.send("start-resize", dir),
+    stopResize: () => electron_1.ipcRenderer.send("stop-resize"),
     setWindowPinned: (pinned) => electron_1.ipcRenderer.invoke("set-window-pinned", pinned),
     quitApp: () => electron_1.ipcRenderer.invoke("quit-app"),
     // Server management

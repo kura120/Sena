@@ -12,23 +12,119 @@ const yaml_1 = require("yaml");
 const windows = new Map();
 const floatingOrder = [];
 const floatingMoved = new Set();
+const windowPreExpandBounds = new Map();
+let activeResize = null;
+function stopActiveResize() {
+    if (!activeResize)
+        return;
+    clearInterval(activeResize.intervalId);
+    clearTimeout(activeResize.safetyTimeout);
+    activeResize = null;
+}
 /**
  * Re-assert always-on-top on every blur so Windows 11 cannot lower the
  * window's z-order when it loses focus (taskbar thumbnails, Alt-Tab overlay,
  * Snap Assist, etc. all trigger a transient z-order drop on unfocus).
+ *
+ * Strategy:
+ *  1. Immediately cycle off→on to invalidate the stale z-order entry.
+ *  2. After a short delay, call moveTop() to push the window to the very top
+ *     of the z-stack once DWM has finished processing the focus change.
  */
 function keepOnTop(win) {
     win.setAlwaysOnTop(true, "screen-saver");
     win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
     win.on("blur", () => {
-        if (!win.isDestroyed()) {
-            win.setAlwaysOnTop(true, "screen-saver");
-        }
+        if (win.isDestroyed())
+            return;
+        // Cycle off→on forces DWM to refresh the z-order entry immediately.
+        win.setAlwaysOnTop(false);
+        win.setAlwaysOnTop(true, "screen-saver");
+        // After DWM finishes settling the focus change, push to top again.
+        setTimeout(() => {
+            if (!win.isDestroyed()) {
+                win.setAlwaysOnTop(true, "screen-saver");
+                win.moveTop();
+            }
+        }, 50);
     });
 }
+/**
+ * Resolve the best available icon for the current platform.
+ *   Windows  → .ico  (multi-size, required for taskbar/Alt-Tab/shortcuts)
+ *   macOS    → .icns (required for Dock / packaged .app)
+ *   Linux    → .png  (any size; 256×256 or 512×512 recommended)
+ *
+ * Falls back to the PNG on any platform if the preferred format is absent
+ * (e.g. during development before packaging icons are generated).
+ */
+/**
+ * Load the best available icon as a NativeImage, with fallback chain:
+ *   Windows  → .ico → .png
+ *   macOS    → .icns → .png
+ *   Linux    → .png
+ *
+ * Always returns a NativeImage (may be empty if all files are missing/corrupt).
+ * Using a pre-loaded NativeImage instead of a string path is more reliable
+ * because Electron validates the image once here rather than silently falling
+ * back to the default Electron icon at window-creation time.
+ */
+function loadAppIcon() {
+    const base = path_1.default.join(__dirname, "../assets");
+    const candidates = [];
+    if (process.platform === "win32") {
+        candidates.push(path_1.default.join(base, "sena-logo.ico"));
+    }
+    else if (process.platform === "darwin") {
+        candidates.push(path_1.default.join(base, "sena-logo.icns"));
+    }
+    // PNG is the universal fallback for all platforms
+    candidates.push(path_1.default.join(base, "sena-logo.png"));
+    for (const candidate of candidates) {
+        if (fs_1.default.existsSync(candidate)) {
+            const img = electron_1.nativeImage.createFromPath(candidate);
+            if (!img.isEmpty())
+                return img;
+        }
+    }
+    return electron_1.nativeImage.createEmpty();
+}
+const APP_ICON = loadAppIcon();
 let serverProcess = null;
 let isDev = false;
+/**
+ * Per-platform icon bootstrap.
+ * Must be called after app.whenReady() so the dock/taskbar APIs are available.
+ */
+function bootstrapAppIcon() {
+    if (process.platform === "win32") {
+        // Sets the AUMID so Windows groups all windows under a single taskbar
+        // button and associates the correct icon with jump-lists / shortcuts.
+        electron_1.app.setAppUserModelId("com.sena.app");
+    }
+    else if (process.platform === "darwin") {
+        if (!APP_ICON.isEmpty()) {
+            electron_1.app.dock?.setIcon(APP_ICON);
+        }
+    }
+}
+/**
+ * Apply the custom app icon to a BrowserWindow.
+ * Calling win.setIcon() explicitly after construction is the most reliable way
+ * to set the icon shown in Alt-Tab, the taskbar button, and the window
+ * chrome — even in development mode where the Electron executable itself
+ * carries its own default icon.
+ */
+function applyWindowIcon(win) {
+    if (!APP_ICON.isEmpty()) {
+        win.setIcon(APP_ICON);
+    }
+}
 let currentHotkey = "Home";
+// Simulates keyup behaviour for globalShortcut (which only fires on keydown/repeat).
+// Each keydown/repeat resets the timer; the toggle fires 150 ms after the LAST
+// event, i.e. once the key has actually been released.
+let toggleTimeout = null;
 let loaderReadyResolver = null;
 let setupWindowOpen = false;
 const DEFAULT_SERVER_CONFIG = {
@@ -176,19 +272,29 @@ function createLoaderWindow() {
         width: 600,
         height: 420,
         frame: false,
+        thickFrame: false,
         transparent: true,
         backgroundColor: "#00000000",
         resizable: false,
         alwaysOnTop: true,
         focusable: true,
         acceptFirstMouse: true,
+        skipTaskbar: true,
         center: true,
+        icon: APP_ICON,
+        // Hide until content is painted so no gray Chromium background flashes.
+        show: false,
         webPreferences: {
             nodeIntegration: false,
             contextIsolation: true,
             backgroundThrottling: false,
             preload: path_1.default.join(__dirname, "preload.js"),
         },
+    });
+    keepOnTop(loaderWindow);
+    loaderWindow.once("ready-to-show", () => {
+        applyWindowIcon(loaderWindow);
+        loaderWindow.show();
     });
     if (isDev) {
         loaderWindow.loadURL("http://localhost:5173/#/loader");
@@ -218,6 +324,7 @@ function createSetupWindow() {
         width: 660,
         height: 620,
         frame: false,
+        thickFrame: false,
         transparent: true,
         backgroundColor: "#00000000",
         resizable: true,
@@ -226,7 +333,11 @@ function createSetupWindow() {
         alwaysOnTop: true,
         focusable: true,
         acceptFirstMouse: true,
+        skipTaskbar: true,
         center: true,
+        icon: APP_ICON,
+        // Hide until content is painted so no gray Chromium background flashes.
+        show: false,
         webPreferences: {
             nodeIntegration: false,
             contextIsolation: true,
@@ -235,6 +346,9 @@ function createSetupWindow() {
         },
     });
     keepOnTop(setupWindow);
+    setupWindow.once("ready-to-show", () => {
+        setupWindow.show();
+    });
     if (isDev) {
         setupWindow.loadURL("http://localhost:5173/#/setup");
     }
@@ -258,17 +372,25 @@ function createDashboardWindow() {
     const { width, height } = electron_1.screen.getPrimaryDisplay().workAreaSize;
     const dashboardWindow = new electron_1.BrowserWindow({
         width: 500,
-        height: 80,
+        // Extra height above the hotbar bar gives the button tooltips room to render
+        // without being clipped by the window edge.
+        height: 110,
         x: Math.floor((width - 500) / 2),
-        y: height - 100,
+        // Keep the same ~20 px bottom gap: y + height = workAreaHeight - 20
+        y: height - 130,
         frame: false,
+        thickFrame: false,
         transparent: true,
+        backgroundColor: "#00000000",
         resizable: false,
         alwaysOnTop: true,
         focusable: true,
         acceptFirstMouse: true,
         skipTaskbar: true,
         autoHideMenuBar: true,
+        icon: APP_ICON,
+        // Hide until content is painted so no gray Chromium background flashes.
+        show: false,
         ...(process.platform === "win32"
             ? {
                 titleBarStyle: "hidden",
@@ -284,6 +406,10 @@ function createDashboardWindow() {
     dashboardWindow.setMenuBarVisibility(false);
     dashboardWindow.setAutoHideMenuBar(true);
     keepOnTop(dashboardWindow);
+    dashboardWindow.once("ready-to-show", () => {
+        applyWindowIcon(dashboardWindow);
+        dashboardWindow.show();
+    });
     if (isDev) {
         dashboardWindow.loadURL("http://localhost:5173/#/dashboard");
     }
@@ -310,12 +436,28 @@ function createFloatingWindow(feature, title) {
     const floatingWindow = new electron_1.BrowserWindow({
         width: 700,
         height: 550,
+        minWidth: 550,
+        minHeight: 420,
         frame: false,
+        // thickFrame: true keeps WS_THICKFRAME on the window so Windows owns all
+        // resize hit-testing and drag operations natively. Setting it to false
+        // forced us to implement custom IPC-based resize which was unreliable on
+        // transparent windows. With thickFrame: true the resize border is
+        // invisible (covered by our dark background) but fully functional.
+        thickFrame: false,
         transparent: true,
-        backgroundColor: "#00000000",
+        // Use the actual background colour instead of fully-transparent #00000000.
+        // On Windows, a zero-alpha backgroundColor tells DWM the entire surface has
+        // no alpha before Chromium finishes its first paint, so the window never
+        // gets composited and appears completely invisible. A solid base colour
+        // forces DWM to composite the window correctly from the very first frame;
+        // the CSS html/body backgrounds stay transparent so rounded corners still
+        // show through as intended.
+        backgroundColor: "#0A0E27",
         alwaysOnTop: true,
         focusable: true,
         acceptFirstMouse: true,
+        icon: APP_ICON,
         show: false,
         ...(process.platform === "win32"
             ? {
@@ -340,6 +482,7 @@ function createFloatingWindow(feature, title) {
     }
     // Show window after content loads
     floatingWindow.once("ready-to-show", () => {
+        applyWindowIcon(floatingWindow);
         floatingWindow.show();
         floatingWindow.focus();
     });
@@ -349,6 +492,7 @@ function createFloatingWindow(feature, title) {
     floatingWindow.on("closed", () => {
         windows.delete(feature);
         floatingMoved.delete(feature);
+        windowPreExpandBounds.delete(floatingWindow.id);
         const index = floatingOrder.indexOf(feature);
         if (index >= 0) {
             floatingOrder.splice(index, 1);
@@ -401,6 +545,8 @@ function trackWindowMovement(windowId, win) {
  */
 electron_1.app.whenReady().then(async () => {
     isDev = !electron_1.app.isPackaged;
+    // Apply platform-specific icon to taskbar / Dock before any window opens.
+    bootstrapAppIcon();
     // Create loader window
     const loaderWindow = createLoaderWindow();
     const loaderStart = Date.now();
@@ -434,15 +580,23 @@ electron_1.app.whenReady().then(async () => {
         // Close loader and open dashboard
         loaderWindow.close();
         const dashboardWindow = createDashboardWindow();
-        // Register the initial hotkey (Home key by default)
+        // Register the initial hotkey (Home key by default).
+        // Defer the toggle until 150 ms after the last keydown so the hotbar only
+        // reacts when the key is fully released (key-repeat events arrive every
+        // ~30-50 ms, so a 150 ms quiet period reliably means the key is up).
         electron_1.globalShortcut.register(currentHotkey, () => {
-            if (dashboardWindow.isVisible()) {
-                dashboardWindow.hide();
-            }
-            else {
-                dashboardWindow.show();
-                dashboardWindow.focus();
-            }
+            if (toggleTimeout)
+                clearTimeout(toggleTimeout);
+            toggleTimeout = setTimeout(() => {
+                toggleTimeout = null;
+                if (dashboardWindow.isVisible()) {
+                    dashboardWindow.hide();
+                }
+                else {
+                    dashboardWindow.show();
+                    dashboardWindow.focus();
+                }
+            }, 150);
         });
     }
     catch (error) {
@@ -485,13 +639,18 @@ electron_1.ipcMain.handle("signal-setup-complete", () => {
     if (!windows.get("dashboard")) {
         const dashboardWindow = createDashboardWindow();
         electron_1.globalShortcut.register(currentHotkey, () => {
-            if (dashboardWindow.isVisible()) {
-                dashboardWindow.hide();
-            }
-            else {
-                dashboardWindow.show();
-                dashboardWindow.focus();
-            }
+            if (toggleTimeout)
+                clearTimeout(toggleTimeout);
+            toggleTimeout = setTimeout(() => {
+                toggleTimeout = null;
+                if (dashboardWindow.isVisible()) {
+                    dashboardWindow.hide();
+                }
+                else {
+                    dashboardWindow.show();
+                    dashboardWindow.focus();
+                }
+            }, 150);
         });
     }
     return true;
@@ -512,14 +671,88 @@ electron_1.ipcMain.handle("minimize-window", (event) => {
     const window = electron_1.BrowserWindow.fromWebContents(event.sender);
     window?.minimize();
 });
-// Maximize/restore window
+// Start a resize session.
+// The main process owns all cursor reading via screen.getCursorScreenPoint() so
+// there is no DPI coordinate mismatch between the renderer and main process.
+electron_1.ipcMain.on("start-resize", (event, dir) => {
+    stopActiveResize();
+    const win = electron_1.BrowserWindow.fromWebContents(event.sender);
+    if (!win)
+        return;
+    const startCursor = electron_1.screen.getCursorScreenPoint();
+    const startBounds = win.getBounds();
+    const [minW, minH] = win.getMinimumSize();
+    const intervalId = setInterval(() => {
+        if (!activeResize)
+            return;
+        if (activeResize.win.isDestroyed()) {
+            stopActiveResize();
+            return;
+        }
+        const cursor = electron_1.screen.getCursorScreenPoint();
+        const dx = cursor.x - startCursor.x;
+        const dy = cursor.y - startCursor.y;
+        let { x, y, width, height } = startBounds;
+        if (dir.includes("e"))
+            width = Math.max(minW, width + dx);
+        if (dir.includes("s"))
+            height = Math.max(minH, height + dy);
+        if (dir.includes("w")) {
+            x = x + dx;
+            width = Math.max(minW, width - dx);
+        }
+        if (dir.includes("n")) {
+            y = y + dy;
+            height = Math.max(minH, height - dy);
+        }
+        win.setBounds({
+            x: Math.round(x),
+            y: Math.round(y),
+            width: Math.round(width),
+            height: Math.round(height),
+        });
+    }, 16);
+    // Safety net: stop the session after 10 s in case stop-resize IPC is never
+    // received (e.g. renderer crash). We intentionally do NOT use win.blur here
+    // because transparent frameless windows fire blur the instant the cursor
+    // crosses a transparent pixel while dragging outward — that would kill the
+    // resize session before the user has moved the mouse at all.
+    const safetyTimeout = setTimeout(() => stopActiveResize(), 10000);
+    activeResize = {
+        win,
+        dir,
+        startCursor,
+        startBounds,
+        minW,
+        minH,
+        intervalId,
+        safetyTimeout,
+    };
+});
+// Stop the active resize session (sent on pointerup from renderer).
+electron_1.ipcMain.on("stop-resize", () => stopActiveResize());
+// Maximize/restore window — uses manual setBounds because transparent
+// frameless windows can silently ignore window.maximize() on Windows.
 electron_1.ipcMain.handle("maximize-window", (event) => {
     const window = electron_1.BrowserWindow.fromWebContents(event.sender);
-    if (window?.isMaximized()) {
-        window.restore();
+    if (!window)
+        return;
+    const id = window.id;
+    if (windowPreExpandBounds.has(id)) {
+        // Restore to pre-expand bounds
+        window.setBounds(windowPreExpandBounds.get(id));
+        windowPreExpandBounds.delete(id);
     }
     else {
-        window?.maximize();
+        // Save current bounds then expand to full work area
+        windowPreExpandBounds.set(id, window.getBounds());
+        const { workArea } = electron_1.screen.getPrimaryDisplay();
+        window.setBounds({
+            x: workArea.x,
+            y: workArea.y,
+            width: workArea.width,
+            height: workArea.height,
+        });
     }
 });
 // Toggle always-on-top state for floating window
@@ -558,13 +791,18 @@ electron_1.ipcMain.handle("set-hotkey", async (_event, key) => {
     const dashboardWindow = windows.get("dashboard");
     if (dashboardWindow) {
         electron_1.globalShortcut.register(currentHotkey, () => {
-            if (dashboardWindow.isVisible()) {
-                dashboardWindow.hide();
-            }
-            else {
-                dashboardWindow.show();
-                dashboardWindow.focus();
-            }
+            if (toggleTimeout)
+                clearTimeout(toggleTimeout);
+            toggleTimeout = setTimeout(() => {
+                toggleTimeout = null;
+                if (dashboardWindow.isVisible()) {
+                    dashboardWindow.hide();
+                }
+                else {
+                    dashboardWindow.show();
+                    dashboardWindow.focus();
+                }
+            }, 150);
         });
     }
     return true;

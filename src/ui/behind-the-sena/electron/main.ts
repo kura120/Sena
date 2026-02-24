@@ -26,14 +26,15 @@ interface ResizeSession {
   minW: number;
   minH: number;
   intervalId: ReturnType<typeof setInterval>;
+  safetyTimeout: ReturnType<typeof setTimeout>;
 }
 let activeResize: ResizeSession | null = null;
 
 function stopActiveResize() {
-  if (activeResize) {
-    clearInterval(activeResize.intervalId);
-    activeResize = null;
-  }
+  if (!activeResize) return;
+  clearInterval(activeResize.intervalId);
+  clearTimeout(activeResize.safetyTimeout);
+  activeResize = null;
 }
 
 /**
@@ -72,25 +73,39 @@ function keepOnTop(win: BrowserWindow) {
  * Falls back to the PNG on any platform if the preferred format is absent
  * (e.g. during development before packaging icons are generated).
  */
-function resolveIconPath(): string {
+/**
+ * Load the best available icon as a NativeImage, with fallback chain:
+ *   Windows  → .ico → .png
+ *   macOS    → .icns → .png
+ *   Linux    → .png
+ *
+ * Always returns a NativeImage (may be empty if all files are missing/corrupt).
+ * Using a pre-loaded NativeImage instead of a string path is more reliable
+ * because Electron validates the image once here rather than silently falling
+ * back to the default Electron icon at window-creation time.
+ */
+function loadAppIcon(): Electron.NativeImage {
   const base = path.join(__dirname, "../assets");
+
+  const candidates: string[] = [];
   if (process.platform === "win32") {
-    const ico = path.join(base, "sena-logo.ico");
-    if (fs.existsSync(ico)) return ico;
+    candidates.push(path.join(base, "sena-logo.ico"));
   } else if (process.platform === "darwin") {
-    const icns = path.join(base, "sena-logo.icns");
-    if (fs.existsSync(icns)) return icns;
+    candidates.push(path.join(base, "sena-logo.icns"));
   }
-  return path.join(base, "sena-logo.png");
+  // PNG is the universal fallback for all platforms
+  candidates.push(path.join(base, "sena-logo.png"));
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      const img = nativeImage.createFromPath(candidate);
+      if (!img.isEmpty()) return img;
+    }
+  }
+  return nativeImage.createEmpty();
 }
 
-const ICON_PATH = resolveIconPath();
-
-/**
- * Pre-built NativeImage so we create it once and reuse for every BrowserWindow
- * and the macOS Dock / Windows taskbar overlay.
- */
-const APP_ICON = nativeImage.createFromPath(ICON_PATH);
+const APP_ICON = loadAppIcon();
 
 let serverProcess: ChildProcess | null = null;
 let isDev = false;
@@ -101,14 +116,26 @@ let isDev = false;
  */
 function bootstrapAppIcon() {
   if (process.platform === "win32") {
-    // Sets the icon shown in the Windows taskbar, Alt-Tab switcher, and jump
-    // lists for the whole process (not just individual windows).
+    // Sets the AUMID so Windows groups all windows under a single taskbar
+    // button and associates the correct icon with jump-lists / shortcuts.
     app.setAppUserModelId("com.sena.app");
   } else if (process.platform === "darwin") {
-    // setDock icon shows the custom logo in the macOS Dock while the app runs.
     if (!APP_ICON.isEmpty()) {
       app.dock?.setIcon(APP_ICON);
     }
+  }
+}
+
+/**
+ * Apply the custom app icon to a BrowserWindow.
+ * Calling win.setIcon() explicitly after construction is the most reliable way
+ * to set the icon shown in Alt-Tab, the taskbar button, and the window
+ * chrome — even in development mode where the Electron executable itself
+ * carries its own default icon.
+ */
+function applyWindowIcon(win: BrowserWindow): void {
+  if (!APP_ICON.isEmpty()) {
+    win.setIcon(APP_ICON);
   }
 }
 let currentHotkey = "Home";
@@ -307,7 +334,7 @@ function createLoaderWindow() {
     acceptFirstMouse: true,
     skipTaskbar: true,
     center: true,
-    icon: ICON_PATH,
+    icon: APP_ICON,
     // Hide until content is painted so no gray Chromium background flashes.
     show: false,
     webPreferences: {
@@ -318,7 +345,9 @@ function createLoaderWindow() {
     },
   });
 
+  keepOnTop(loaderWindow);
   loaderWindow.once("ready-to-show", () => {
+    applyWindowIcon(loaderWindow);
     loaderWindow.show();
   });
 
@@ -366,7 +395,7 @@ function createSetupWindow() {
     acceptFirstMouse: true,
     skipTaskbar: true,
     center: true,
-    icon: ICON_PATH,
+    icon: APP_ICON,
     // Hide until content is painted so no gray Chromium background flashes.
     show: false,
     webPreferences: {
@@ -426,7 +455,7 @@ function createDashboardWindow() {
     acceptFirstMouse: true,
     skipTaskbar: true,
     autoHideMenuBar: true,
-    icon: ICON_PATH,
+    icon: APP_ICON,
     // Hide until content is painted so no gray Chromium background flashes.
     show: false,
     ...(process.platform === "win32"
@@ -447,6 +476,7 @@ function createDashboardWindow() {
   keepOnTop(dashboardWindow);
 
   dashboardWindow.once("ready-to-show", () => {
+    applyWindowIcon(dashboardWindow);
     dashboardWindow.show();
   });
 
@@ -483,13 +513,25 @@ function createFloatingWindow(feature: string, title: string) {
     minWidth: 550,
     minHeight: 420,
     frame: false,
+    // thickFrame: true keeps WS_THICKFRAME on the window so Windows owns all
+    // resize hit-testing and drag operations natively. Setting it to false
+    // forced us to implement custom IPC-based resize which was unreliable on
+    // transparent windows. With thickFrame: true the resize border is
+    // invisible (covered by our dark background) but fully functional.
     thickFrame: false,
     transparent: true,
-    backgroundColor: "#00000000",
+    // Use the actual background colour instead of fully-transparent #00000000.
+    // On Windows, a zero-alpha backgroundColor tells DWM the entire surface has
+    // no alpha before Chromium finishes its first paint, so the window never
+    // gets composited and appears completely invisible. A solid base colour
+    // forces DWM to composite the window correctly from the very first frame;
+    // the CSS html/body backgrounds stay transparent so rounded corners still
+    // show through as intended.
+    backgroundColor: "#0A0E27",
     alwaysOnTop: true,
     focusable: true,
     acceptFirstMouse: true,
-    icon: ICON_PATH,
+    icon: APP_ICON,
     show: false,
     ...(process.platform === "win32"
       ? {
@@ -516,6 +558,7 @@ function createFloatingWindow(feature: string, title: string) {
 
   // Show window after content loads
   floatingWindow.once("ready-to-show", () => {
+    applyWindowIcon(floatingWindow);
     floatingWindow.show();
     floatingWindow.focus();
   });
@@ -738,8 +781,9 @@ ipcMain.handle("minimize-window", (event) => {
   window?.minimize();
 });
 
-// Start a resize session — main process polls global cursor position every
-// 16 ms so resize works even when the mouse leaves the window boundary.
+// Start a resize session.
+// The main process owns all cursor reading via screen.getCursorScreenPoint() so
+// there is no DPI coordinate mismatch between the renderer and main process.
 ipcMain.on("start-resize", (event, dir: string) => {
   stopActiveResize();
 
@@ -752,10 +796,14 @@ ipcMain.on("start-resize", (event, dir: string) => {
 
   const intervalId = setInterval(() => {
     if (!activeResize) return;
+    if (activeResize.win.isDestroyed()) {
+      stopActiveResize();
+      return;
+    }
+
     const cursor = screen.getCursorScreenPoint();
     const dx = cursor.x - startCursor.x;
     const dy = cursor.y - startCursor.y;
-
     let { x, y, width, height } = startBounds;
 
     if (dir.includes("e")) width = Math.max(minW, width + dx);
@@ -777,17 +825,30 @@ ipcMain.on("start-resize", (event, dir: string) => {
     });
   }, 16);
 
-  activeResize = { win, dir, startCursor, startBounds, minW, minH, intervalId };
+  // Safety net: stop the session after 10 s in case stop-resize IPC is never
+  // received (e.g. renderer crash). We intentionally do NOT use win.blur here
+  // because transparent frameless windows fire blur the instant the cursor
+  // crosses a transparent pixel while dragging outward — that would kill the
+  // resize session before the user has moved the mouse at all.
+  const safetyTimeout = setTimeout(() => stopActiveResize(), 10_000);
+
+  activeResize = {
+    win,
+    dir,
+    startCursor,
+    startBounds,
+    minW,
+    minH,
+    intervalId,
+    safetyTimeout,
+  };
 });
 
 // Stop the active resize session (sent on pointerup from renderer).
-ipcMain.on("stop-resize", () => {
-  stopActiveResize();
-});
+ipcMain.on("stop-resize", () => stopActiveResize());
 
 // Maximize/restore window — uses manual setBounds because transparent
-// frameless windows (thickFrame:false) silently ignore window.maximize()
-// on Windows.
+// frameless windows can silently ignore window.maximize() on Windows.
 ipcMain.handle("maximize-window", (event) => {
   const window = BrowserWindow.fromWebContents(event.sender);
   if (!window) return;
