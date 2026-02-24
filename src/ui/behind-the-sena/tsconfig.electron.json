@@ -3,9 +3,10 @@
   "compilerOptions": {
     "module": "commonjs",
     "outDir": "dist-electron",
+    "noEmit": false,
     "skipLibCheck": true,
     "moduleResolution": "node",
-    "esModuleInterop": true
+    "esModuleInterop": true,
   },
-  "include": ["electron/**/*"]
+  "include": ["electron/**/*"],
 }

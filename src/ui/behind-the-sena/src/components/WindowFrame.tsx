@@ -1,4 +1,4 @@
-import React, { ReactNode, useMemo, useState } from "react";
+import React, { ReactNode, useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import {
   X,
@@ -25,38 +25,82 @@ const CURSOR: Record<ResizeDir, string> = {
   nw: "nw-resize",
 };
 
-/** Invisible hit-area size in px. Large enough to be easy to grab. */
-const HIT = 6;
+// Hit area size in px. 10px is wide enough to grab reliably without covering
+// too much of the window content.
+const HIT = 10;
+
+// Handle inset from the window edge corners. rounded-2xl uses a 16px radius so
+// we need to clear that before the background is painted and hittable.
+const CORNER_INSET = 18;
 
 function ResizeHandles() {
-  const onPointerDown = (dir: ResizeDir) => (e: React.PointerEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
+  // NOTE: We intentionally do NOT add a window "blur" listener here to call
+  // stopResize(). Transparent frameless windows on Windows fire blur the moment
+  // the cursor crosses a transparent pixel while dragging an edge outward —
+  // that would kill the resize session before the user moves the mouse at all.
+  // The main process now uses a 10-second safety timeout instead, and the
+  // renderer relies on pointerup + pointercancel (both covered by pointer
+  // capture) as the reliable stop signals.
 
-    // Tell main process to start polling screen.getCursorScreenPoint().
-    // All resize math happens there, so it works even when the mouse
-    // leaves the window boundary.
-    window.sena.startResize(dir);
+  const onPointerDown =
+    (dir: ResizeDir) => (e: React.PointerEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      e.stopPropagation();
 
-    const onUp = () => {
-      window.sena.stopResize();
-      document.removeEventListener("pointerup", onUp);
+      // setPointerCapture forces the browser (and Win32 SetCapture underneath)
+      // to keep routing pointermove + pointerup to this element even when the
+      // cursor leaves the window boundary. This is the correct OS-level fix for
+      // "pointerup doesn't fire outside a transparent window".
+      const target = e.currentTarget;
+      const pointerId = e.pointerId;
+      try {
+        target.setPointerCapture(pointerId);
+      } catch (_) {
+        /* ignore — pointer may already be captured */
+      }
+
+      // The main process owns all coordinate reading via
+      // screen.getCursorScreenPoint(), so we pass only the direction here.
+      // This avoids any DPI/scaling mismatch between e.screenX and win.getBounds().
+      window.sena.startResize(dir);
+
+      const stopDrag = () => {
+        window.sena.stopResize();
+        try {
+          target.releasePointerCapture(pointerId);
+        } catch (_) {
+          /* already released */
+        }
+        window.removeEventListener("pointerup", stopDrag);
+        window.removeEventListener("pointercancel", stopDrag);
+      };
+
+      // Listen on window (not document) so the handler fires even when the
+      // captured pointer is reported outside the DOM tree.
+      // pointercancel covers cases where the OS or browser forcibly cancels the
+      // drag (e.g. Alt-Tab, screen lock, touch interrupt on hybrid devices).
+      window.addEventListener("pointerup", stopDrag);
+      window.addEventListener("pointercancel", stopDrag);
     };
-    document.addEventListener("pointerup", onUp);
-  };
 
-  // Shared base style — transparent, on top of everything
-  const base: React.CSSProperties = { position: "fixed", zIndex: 9999 };
+  // base style — transparent background with the tiniest non-zero alpha so
+  // that Windows routes pointer events to the handle even when it sits over a
+  // transparent corner pixel (alpha=0 = click-through on layered windows).
+  const base: React.CSSProperties = {
+    position: "fixed",
+    zIndex: 9999,
+    background: "rgba(0,0,0,0.01)",
+  };
 
   return (
     <>
-      {/* ── Edges ── */}
+      {/* ── Edges (inset from corners to stay inside the painted bg area) ── */}
       <div
         style={{
           ...base,
           top: 0,
-          left: HIT,
-          right: HIT,
+          left: CORNER_INSET,
+          right: CORNER_INSET,
           height: HIT,
           cursor: CURSOR.n,
         }}
@@ -66,8 +110,8 @@ function ResizeHandles() {
         style={{
           ...base,
           bottom: 0,
-          left: HIT,
-          right: HIT,
+          left: CORNER_INSET,
+          right: CORNER_INSET,
           height: HIT,
           cursor: CURSOR.s,
         }}
@@ -77,8 +121,8 @@ function ResizeHandles() {
         style={{
           ...base,
           left: 0,
-          top: HIT,
-          bottom: HIT,
+          top: CORNER_INSET,
+          bottom: CORNER_INSET,
           width: HIT,
           cursor: CURSOR.w,
         }}
@@ -88,8 +132,8 @@ function ResizeHandles() {
         style={{
           ...base,
           right: 0,
-          top: HIT,
-          bottom: HIT,
+          top: CORNER_INSET,
+          bottom: CORNER_INSET,
           width: HIT,
           cursor: CURSOR.e,
         }}
@@ -101,8 +145,8 @@ function ResizeHandles() {
           ...base,
           top: 0,
           left: 0,
-          width: HIT,
-          height: HIT,
+          width: CORNER_INSET + HIT,
+          height: CORNER_INSET + HIT,
           cursor: CURSOR.nw,
         }}
         onPointerDown={onPointerDown("nw")}
@@ -112,8 +156,8 @@ function ResizeHandles() {
           ...base,
           top: 0,
           right: 0,
-          width: HIT,
-          height: HIT,
+          width: CORNER_INSET + HIT,
+          height: CORNER_INSET + HIT,
           cursor: CURSOR.ne,
         }}
         onPointerDown={onPointerDown("ne")}
@@ -123,8 +167,8 @@ function ResizeHandles() {
           ...base,
           bottom: 0,
           left: 0,
-          width: HIT,
-          height: HIT,
+          width: CORNER_INSET + HIT,
+          height: CORNER_INSET + HIT,
           cursor: CURSOR.sw,
         }}
         onPointerDown={onPointerDown("sw")}
@@ -134,8 +178,8 @@ function ResizeHandles() {
           ...base,
           bottom: 0,
           right: 0,
-          width: HIT,
-          height: HIT,
+          width: CORNER_INSET + HIT,
+          height: CORNER_INSET + HIT,
           cursor: CURSOR.se,
         }}
         onPointerDown={onPointerDown("se")}
