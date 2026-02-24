@@ -269,7 +269,7 @@ function sendToWindow(windowId, channel, data) {
  */
 function createLoaderWindow() {
     const loaderWindow = new electron_1.BrowserWindow({
-        width: 600,
+        width: 520,
         height: 420,
         frame: false,
         thickFrame: false,

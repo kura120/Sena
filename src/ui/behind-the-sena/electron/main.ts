@@ -322,7 +322,7 @@ function sendToWindow(windowId: string, channel: string, data: any) {
  */
 function createLoaderWindow() {
   const loaderWindow = new BrowserWindow({
-    width: 600,
+    width: 520,
     height: 420,
     frame: false,
     thickFrame: false,
