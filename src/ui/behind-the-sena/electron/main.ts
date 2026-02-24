@@ -328,6 +328,12 @@ function createLoaderWindow() {
     thickFrame: false,
     transparent: true,
     backgroundColor: "#00000000",
+    // Explicitly disable Windows 11 Mica/Acrylic background material.
+    // Without this, DWM applies a semi-transparent gray/frosted effect to the
+    // entire window surface on Windows 11, which appears as a gray frame around
+    // the loader card even though the React content is bg-transparent.
+    backgroundMaterial: "none",
+    hasShadow: false,
     resizable: false,
     alwaysOnTop: true,
     focusable: true,
