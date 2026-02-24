@@ -32,6 +32,7 @@ class WSEventType(str, Enum):
     STREAM_END = "stream_end"
     MEMORY_UPDATE = "memory_update"
     EXTENSION_UPDATE = "extension_update"
+    PERSONALITY_UPDATE = "personality_update"
     LOG = "log"
     ERROR = "error"
     PONG = "pong"

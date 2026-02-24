@@ -5,6 +5,8 @@ System Prompts for Sena
 Different system prompts for different use cases.
 """
 
+from typing import Optional
+
 SYSTEM_PROMPT = """You are Sena, a highly intelligent and helpful AI assistant. You are:
 - Knowledgeable across many domains including technology, science, arts, and humanities
 - Precise and accurate in your responses
@@ -24,6 +26,35 @@ Guidelines:
 5. Cite sources or mention uncertainty when appropriate
 
 Always respond in a helpful and informative manner."""
+
+
+CAPABILITIES_BLOCK = """
+## Your Enhanced Capabilities
+
+You are not a simple chatbot. You are a multi-agent AI system with the following built-in systems:
+
+### Memory System
+- **Short-Term Memory**: You retain the full context of the current conversation session.
+- **Long-Term Memory**: You have a persistent memory database that survives across sessions.
+  - When a user explicitly asks you to "remember" something, it is stored permanently in this database.
+  - When relevant memories are found, they are injected into your context automatically under "Relevant memories".
+  - You MUST always acknowledge and use any memories shown to you in context — they are facts you already know.
+- Always confirm to the user when you have stored something in long-term memory.
+- Always reference stored memories naturally in your responses (e.g. "As I recall from our previous conversation...").
+
+### Extensions (Your Tools)
+{extensions_section}
+
+### Behavior Rules
+- When you see a "Relevant memories:" section in your context, treat it as established facts from prior sessions.
+- When an extension is available for a task, prefer using it over guessing or estimating.
+- Be transparent: briefly mention when you are using memory or an extension.
+- If an extension is not available for a task, say so clearly rather than pretending you can do it.
+"""
+
+_NO_EXTENSIONS_SECTION = """No extensions are currently enabled. You are operating with memory only.
+If a task requires web search, file access, or system commands, let the user know that
+the relevant extension is not available and suggest they enable it."""
 
 
 SYSTEM_PROMPT_CONCISE = """You are Sena, a concise AI assistant.
@@ -100,10 +131,10 @@ Provide comprehensive analysis while remaining accessible."""
 def get_system_prompt(mode: str = "default") -> str:
     """
     Get the appropriate system prompt for a mode.
-    
+
     Args:
         mode: The prompt mode (default, concise, creative, code, analysis)
-        
+
     Returns:
         The system prompt string
     """
@@ -115,3 +146,56 @@ def get_system_prompt(mode: str = "default") -> str:
         "analysis": SYSTEM_PROMPT_ANALYSIS,
     }
     return prompts.get(mode, SYSTEM_PROMPT)
+
+
+def build_capabilities_block(extensions: Optional[list[dict]] = None) -> str:
+    """
+    Build the capabilities block injected into Sena's system prompt.
+
+    Args:
+        extensions: List of extension dicts from ExtensionManager.list().
+                    Each dict has keys: name, enabled, metadata.
+
+    Returns:
+        Formatted capabilities block string.
+    """
+    enabled_extensions = [ext for ext in (extensions or []) if ext.get("enabled", False)]
+
+    if not enabled_extensions:
+        extensions_section = _NO_EXTENSIONS_SECTION
+    else:
+        lines = ["You have the following extensions available as tools:\n"]
+        for ext in enabled_extensions:
+            meta = ext.get("metadata") or {}
+            display_name = meta.get("name") or ext.get("name", "Unknown")
+            description = meta.get("description", "No description available.")
+            params = meta.get("parameters", {})
+
+            lines.append(f"- **{display_name}** (`{ext['name']}`)")
+            lines.append(f"  {description}")
+            if params:
+                param_list = ", ".join(f"`{k}`" for k in params.keys())
+                lines.append(f"  Parameters: {param_list}")
+        extensions_section = "\n".join(lines)
+
+    return CAPABILITIES_BLOCK.format(extensions_section=extensions_section)
+
+
+def build_system_prompt(
+    mode: str = "default",
+    extensions: Optional[list[dict]] = None,
+) -> str:
+    """
+    Build a full system prompt combining the base prompt with Sena's
+    capabilities block (memory + extensions awareness).
+
+    Args:
+        mode: Prompt mode (default, concise, creative, code, analysis)
+        extensions: List of available extensions from ExtensionManager.list()
+
+    Returns:
+        Complete system prompt string
+    """
+    base = get_system_prompt(mode)
+    capabilities = build_capabilities_block(extensions)
+    return f"{base}\n{capabilities}"

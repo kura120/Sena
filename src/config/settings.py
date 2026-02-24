@@ -118,6 +118,26 @@ class RetrievalConfig(BaseModel):
     reranking: bool = True
 
 
+class PersonalityConfig(BaseModel):
+    """Personality system configuration."""
+
+    # Privacy & learning defaults
+    inferential_learning_enabled: bool = True
+    inferential_learning_requires_approval: bool = True  # Conservative: opt-in approval
+
+    # Auto-approval policy
+    auto_approve_enabled: bool = False  # Off by default; user turns on
+    auto_approve_threshold: float = 0.85  # Confidence must exceed this to auto-approve
+    learning_mode: str = "moderate"  # "conservative" | "moderate" | "aggressive"
+
+    # System prompt token budget (tokens reserved for personality block)
+    personality_token_budget: int = 512
+    max_fragments_in_prompt: int = 10
+
+    # Compression: when fragment count exceeds this, compress into a summary
+    compress_threshold: int = 20
+
+
 class MemoryConfig(BaseModel):
     """Complete memory configuration."""
 
@@ -128,6 +148,7 @@ class MemoryConfig(BaseModel):
     short_term: ShortTermMemoryConfig = Field(default_factory=ShortTermMemoryConfig)
     long_term: LongTermMemoryConfig = Field(default_factory=LongTermMemoryConfig)
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
+    personality: PersonalityConfig = Field(default_factory=PersonalityConfig)
 
 
 class ExtensionSecurityConfig(BaseModel):

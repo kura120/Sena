@@ -76,6 +76,46 @@ Conversation:
 Summary:"""
 
 
+SESSION_TITLE_PROMPT = """Generate a very short session title (3-6 words maximum) that captures the main topic of this conversation opener.
+
+User message: {message}
+
+Rules:
+- Maximum 6 words
+- No punctuation at the end
+- Title case
+- Be specific, not generic (avoid "Chat Session", "New Conversation")
+- Focus on the actual topic/task
+
+Respond with ONLY the title, nothing else."""
+
+
+MEMORY_STORE_DETECTION_PROMPT = """Analyze the following user message and determine if the user is explicitly asking to store or remember a specific piece of information for future reference.
+
+User message: {message}
+
+Examples of STORE requests:
+- "remember this number: 6"
+- "remember that my name is Alex"
+- "please remember I prefer dark mode"
+- "store this: my API key is abc123"
+- "keep in mind that I work at Acme Corp"
+- "don't forget my birthday is March 15"
+
+Examples of NON-STORE requests:
+- "do you remember what we talked about?"  (recall, not store)
+- "what did I tell you earlier?"  (recall)
+- "remember when we discussed Python?"  (rhetorical/recall)
+- "I remember now"  (user statement, not a store request)
+
+If this IS a store request, extract EXACTLY what should be stored (the actual information content, not the instruction to remember it).
+
+Respond in this exact JSON format:
+{{"is_store": true/false, "content": "the exact information to store or null"}}
+
+Respond with ONLY the JSON, nothing else."""
+
+
 EXTENSION_GENERATION_PROMPT = """Create a Python extension for Sena based on the following description:
 
 Description: {description}

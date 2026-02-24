@@ -1,7 +1,9 @@
 """mem0 API client for AI-powered memory management."""
 
 import builtins
+import shutil
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Optional, cast
 
 import httpx
@@ -66,6 +68,34 @@ class Mem0Client:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
         return headers
+
+    @staticmethod
+    def _is_dimension_mismatch(exc: Exception) -> bool:
+        """Return True when *exc* is a numpy/ChromaDB embedding shape error."""
+        msg = str(exc).lower()
+        return "not aligned" in msg or ("shapes" in msg and "dim" in msg)
+
+    def _get_mem0_storage_path(self) -> Path:
+        """Return the default mem0 local storage directory."""
+        return Path.home() / ".mem0"
+
+    def _reset_local_memory(self) -> None:
+        """
+        Wipe mem0's local ChromaDB storage and mark the client as
+        uninitialised.  Called when an embedding dimension mismatch is
+        detected so the collection is re-created with the correct dimensions
+        on the next add/search call.
+        """
+        storage = self._get_mem0_storage_path()
+        if storage.exists():
+            logger.warning(
+                f"Embedding dimension mismatch — resetting mem0 storage at "
+                f"{storage}.  All previously stored mem0 vectors will be "
+                f"re-indexed on the next memory operation."
+            )
+            shutil.rmtree(storage, ignore_errors=True)
+        self._local_memory = None
+        self.connected = False
 
     def _ensure_local_memory(self) -> bool:
         if self._local_memory is not None:
@@ -159,11 +189,26 @@ class Mem0Client:
                     return {"status": "error", "message": "mem0 library not initialized"}
                 user_id = (metadata or {}).get("session_id", "default")
                 try:
-                    result = self._local_memory.add(content, user_id=user_id, metadata=metadata or {})
-                except TypeError:
-                    result = self._local_memory.add(content, user_id=user_id)
-                logger.debug(f"Added memory to mem0 (library): {result}")
-                return result if isinstance(result, dict) else {"status": "ok", "result": result}
+                    try:
+                        result = self._local_memory.add(content, user_id=user_id, metadata=metadata or {})
+                    except TypeError:
+                        result = self._local_memory.add(content, user_id=user_id)
+                    logger.debug(f"Added memory to mem0 (library): {result}")
+                    return result if isinstance(result, dict) else {"status": "ok", "result": result}
+                except Exception as inner_exc:
+                    if self._is_dimension_mismatch(inner_exc):
+                        logger.warning(
+                            "mem0 add_memory: dimension mismatch detected — resetting storage and retrying once."
+                        )
+                        self._reset_local_memory()
+                        if not self._ensure_local_memory():
+                            return {"status": "error", "message": "Failed to reinitialise mem0 after reset"}
+                        try:
+                            result = self._local_memory.add(content, user_id=user_id, metadata=metadata or {})
+                        except TypeError:
+                            result = self._local_memory.add(content, user_id=user_id)
+                        return result if isinstance(result, dict) else {"status": "ok", "result": result}
+                    raise
             if not self.client:
                 return {"status": "error", "message": "mem0 client not initialized"}
             if not self.connected:
@@ -204,11 +249,22 @@ class Mem0Client:
                     return []
                 user_id = (metadata_filter or {}).get("session_id", "default")
                 try:
-                    results = self._local_memory.search(query, user_id=user_id, limit=k)
-                except TypeError:
-                    results = self._local_memory.search(query, user_id=user_id)
-                logger.debug(f"Found {len(results)} memories in mem0 (library)")
-                return results if isinstance(results, list) else []
+                    try:
+                        results = self._local_memory.search(query, user_id=user_id, limit=k)
+                    except TypeError:
+                        results = self._local_memory.search(query, user_id=user_id)
+                    logger.debug(f"Found {len(results)} memories in mem0 (library)")
+                    return results if isinstance(results, list) else []
+                except Exception as inner_exc:
+                    if self._is_dimension_mismatch(inner_exc):
+                        logger.warning(
+                            "mem0 search_memories: dimension mismatch detected — "
+                            "resetting storage (returning empty results this call)."
+                        )
+                        self._reset_local_memory()
+                        # Don't retry search — no valid vectors exist after reset.
+                        return []
+                    raise
             if not self.client:
                 return []
             if not self.connected:

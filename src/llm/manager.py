@@ -333,6 +333,57 @@ class LLMManager:
             "active_model": active_type.value if active_type else None,
         }
 
+    async def generate_simple(
+        self,
+        prompt: str,
+        max_tokens: int = 512,
+        temperature: float = 0.3,
+        model_type: Optional[ModelType] = None,
+    ) -> str:
+        """
+        Generate a response for a single prompt string without conversation context.
+
+        Lightweight wrapper around generate() for internal use cases like personality
+        inference and compression where we just need a plain string back.
+
+        Args:
+            prompt: The full prompt to send to the LLM.
+            max_tokens: Maximum tokens to generate.
+            temperature: Sampling temperature.
+            model_type: Force a specific model type (defaults to ModelType.FAST).
+
+        Returns:
+            Generated text string, or empty string on failure.
+        """
+        try:
+            from src.core.constants import ModelType as MT
+
+            selected_type = model_type or MT.FAST
+
+            if not self._initialized:
+                # Try to initialize if not yet done
+                try:
+                    await self.initialize()
+                except Exception as e:
+                    logger.warning(f"generate_simple: LLM not initialized: {e}")
+                    return ""
+
+            model = await self._registry.switch_to(selected_type)
+
+            messages = [Message.user(prompt)]
+
+            response = await model.generate(
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+
+            return response.content if response else ""
+
+        except Exception as e:
+            logger.error(f"generate_simple failed: {e}", exc_info=True)
+            return ""
+
     def get_stats(self) -> dict[str, Any]:
         """
         Get LLM usage statistics.

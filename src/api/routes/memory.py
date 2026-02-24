@@ -12,6 +12,16 @@ from src.utils.logger import logger
 router = APIRouter(prefix="/memory", tags=["Memory"])
 
 
+def _enrich_memory(item: dict[str, Any]) -> dict[str, Any]:
+    """Flatten metadata fields (context, origin) to the top level for the UI."""
+    meta = item.get("metadata") or {}
+    return {
+        **item,
+        "context": meta.get("context", ""),
+        "origin": meta.get("origin", meta.get("source", "unknown")),
+    }
+
+
 @router.get(
     "/recent",
     response_model=dict[str, Any],
@@ -25,10 +35,11 @@ async def get_recent_memories(
     """Fetch recent memories."""
     try:
         results = await memory_mgr.recent_memories(limit=limit)
+        enriched = [_enrich_memory(r) for r in results]
         return {
             "status": "success",
-            "results": results,
-            "count": len(results),
+            "results": enriched,
+            "count": len(enriched),
         }
     except Exception as e:
         logger.error(f"Recent memories error: {e}")
@@ -73,12 +84,13 @@ async def search_memories(
     """Search through stored memories."""
     try:
         results = await memory_mgr.recall(query=query, k=k)
+        enriched = [_enrich_memory(r) for r in results]
 
         return {
             "status": "success",
             "query": query,
-            "results": results,
-            "count": len(results),
+            "results": enriched,
+            "count": len(enriched),
         }
     except Exception as e:
         logger.error(f"Memory search error: {e}")
@@ -226,4 +238,39 @@ async def clear_context(
         }
     except Exception as e:
         logger.error(f"Clear context error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get(
+    "/short-term",
+    response_model=dict[str, Any],
+    summary="Get short-term (in-session) memories",
+    description="Fetch all items currently held in the short-term conversation buffer",
+)
+async def get_short_term_memories(
+    memory_mgr: MemoryManager = Depends(get_memory_manager),
+) -> dict[str, Any]:
+    """Return the contents of the short-term in-memory buffer."""
+    try:
+        items = await memory_mgr.short_term.get_all()
+        results = [
+            {
+                "id": item.id,
+                "content": item.content,
+                "role": item.role,
+                "timestamp": item.timestamp.isoformat(),
+                "expires_at": item.expires_at.isoformat() if item.expires_at else None,
+                "metadata": item.metadata or {},
+                "context": (item.metadata or {}).get("context", "In-session conversation"),
+                "origin": (item.metadata or {}).get("origin", item.role),
+            }
+            for item in items
+        ]
+        return {
+            "status": "success",
+            "results": results,
+            "count": len(results),
+        }
+    except Exception as e:
+        logger.error(f"Short-term memory error: {e}")
         raise HTTPException(status_code=500, detail=str(e))

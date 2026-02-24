@@ -31,6 +31,7 @@ from src.api.routes import (
     extensions_router,
     logs_router,
     memory_router,
+    personality_router,
     processing_router,
     settings_router,
     telemetry_router,
@@ -149,6 +150,7 @@ async def log_requests(request: Request, call_next):
 # Include routers
 app.include_router(chat_router, prefix="/api/v1")
 app.include_router(memory_router, prefix="/api/v1")
+app.include_router(personality_router, prefix="/api/v1")
 app.include_router(extensions_router, prefix="/api/v1")
 app.include_router(debug_router, prefix="/api/v1")
 app.include_router(telemetry_router, prefix="/api/v1")

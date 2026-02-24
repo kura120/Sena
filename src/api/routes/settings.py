@@ -52,6 +52,28 @@ class MemorySettingsRequest(BaseModel):
     retrieval_reranking: Optional[bool] = Field(None, description="Enable retrieval reranking")
     embeddings_model: Optional[str] = Field(None, description="Embedding model name")
 
+    # Personality fields
+    personality_inferential_learning_enabled: Optional[bool] = Field(None, description="Enable inferential learning")
+    personality_inferential_learning_requires_approval: Optional[bool] = Field(
+        None, description="Require approval for inferred fragments"
+    )
+    personality_auto_approve_enabled: Optional[bool] = Field(None, description="Enable auto-approval")
+    personality_auto_approve_threshold: Optional[float] = Field(
+        None, ge=0.0, le=1.0, description="Auto-approve confidence threshold"
+    )
+    personality_learning_mode: Optional[str] = Field(
+        None, description="Learning mode: conservative | moderate | aggressive"
+    )
+    personality_token_budget: Optional[int] = Field(
+        None, ge=64, le=4096, description="Token budget for personality block"
+    )
+    personality_max_fragments_in_prompt: Optional[int] = Field(
+        None, ge=1, le=100, description="Max fragments injected into system prompt"
+    )
+    personality_compress_threshold: Optional[int] = Field(
+        None, ge=5, le=500, description="Fragment count before compression"
+    )
+
 
 class LoggingSettingsRequest(BaseModel):
     """Partial update for logging settings."""
@@ -133,6 +155,7 @@ async def get_memory_settings() -> dict[str, Any]:
     try:
         s = get_settings()
         m = s.memory
+        p = m.personality
         return {
             "status": "success",
             "data": {
@@ -150,6 +173,16 @@ async def get_memory_settings() -> dict[str, Any]:
                     "dynamic_threshold": m.retrieval.dynamic_threshold,
                     "max_results": m.retrieval.max_results,
                     "reranking": m.retrieval.reranking,
+                },
+                "personality": {
+                    "inferential_learning_enabled": p.inferential_learning_enabled,
+                    "inferential_learning_requires_approval": p.inferential_learning_requires_approval,
+                    "auto_approve_enabled": p.auto_approve_enabled,
+                    "auto_approve_threshold": p.auto_approve_threshold,
+                    "learning_mode": p.learning_mode,
+                    "personality_token_budget": p.personality_token_budget,
+                    "max_fragments_in_prompt": p.max_fragments_in_prompt,
+                    "compress_threshold": p.compress_threshold,
                 },
             },
         }
@@ -337,6 +370,25 @@ async def update_memory_settings(payload: MemorySettingsRequest) -> dict[str, An
             m.retrieval.max_results = payload.retrieval_max_results
         if payload.retrieval_reranking is not None:
             m.retrieval.reranking = payload.retrieval_reranking
+
+        # Personality fields
+        p = m.personality
+        if payload.personality_inferential_learning_enabled is not None:
+            p.inferential_learning_enabled = payload.personality_inferential_learning_enabled
+        if payload.personality_inferential_learning_requires_approval is not None:
+            p.inferential_learning_requires_approval = payload.personality_inferential_learning_requires_approval
+        if payload.personality_auto_approve_enabled is not None:
+            p.auto_approve_enabled = payload.personality_auto_approve_enabled
+        if payload.personality_auto_approve_threshold is not None:
+            p.auto_approve_threshold = payload.personality_auto_approve_threshold
+        if payload.personality_learning_mode is not None:
+            p.learning_mode = payload.personality_learning_mode
+        if payload.personality_token_budget is not None:
+            p.personality_token_budget = payload.personality_token_budget
+        if payload.personality_max_fragments_in_prompt is not None:
+            p.max_fragments_in_prompt = payload.personality_max_fragments_in_prompt
+        if payload.personality_compress_threshold is not None:
+            p.compress_threshold = payload.personality_compress_threshold
 
         saved_path = _persist(s)
         logger.info(f"Memory settings updated and saved to {saved_path}")

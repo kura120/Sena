@@ -37,6 +37,9 @@ class DatabaseManager:
 
         self._pool: list[aiosqlite.Connection] = []
         self._pool_lock = asyncio.Lock()
+        # Serialises all write operations so concurrent async tasks never
+        # race each other for the SQLite write-lock.
+        self._write_lock = asyncio.Lock()
         self._initialized = False
 
     async def initialize(self) -> None:
@@ -246,6 +249,49 @@ class DatabaseManager:
                     INSERT INTO memory_fts(rowid, content) VALUES (new.id, new.content);
                 END;
             """,
+            3: """
+                -- Personality Fragments
+                -- Stores explicit (user-stated) and inferred personality knowledge about Sena's preferences/traits
+                CREATE TABLE IF NOT EXISTS personality_fragments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    fragment_id TEXT UNIQUE NOT NULL,
+                    content TEXT NOT NULL,
+                    fragment_type TEXT NOT NULL DEFAULT 'inferred',
+                    category TEXT,
+                    confidence REAL DEFAULT 1.0,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    source TEXT,
+                    version INTEGER DEFAULT 1,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    approved_at DATETIME,
+                    metadata TEXT DEFAULT '{}'
+                );
+
+                -- Personality Audit Log
+                -- Tracks all approval/rejection/edit actions on personality fragments
+                CREATE TABLE IF NOT EXISTS personality_audit (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    fragment_id TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    old_content TEXT,
+                    new_content TEXT,
+                    old_status TEXT,
+                    new_status TEXT,
+                    confidence REAL,
+                    reason TEXT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    metadata TEXT DEFAULT '{}'
+                );
+
+                -- Indexes for personality tables
+                CREATE INDEX IF NOT EXISTS idx_personality_status ON personality_fragments(status);
+                CREATE INDEX IF NOT EXISTS idx_personality_type ON personality_fragments(fragment_type);
+                CREATE INDEX IF NOT EXISTS idx_personality_category ON personality_fragments(category);
+                CREATE INDEX IF NOT EXISTS idx_personality_confidence ON personality_fragments(confidence);
+                CREATE INDEX IF NOT EXISTS idx_personality_audit_fragment ON personality_audit(fragment_id);
+                CREATE INDEX IF NOT EXISTS idx_personality_audit_timestamp ON personality_audit(timestamp);
+            """,
         }
 
     @asynccontextmanager
@@ -274,8 +320,9 @@ class DatabaseManager:
                 conn.row_factory = aiosqlite.Row
                 # Apply per-connection settings.  WAL is already set at the
                 # database level, but busy_timeout must be set per-connection.
-                await conn.execute("PRAGMA busy_timeout=5000")
+                await conn.execute("PRAGMA busy_timeout=10000")
                 await conn.execute("PRAGMA journal_mode=WAL")
+                await conn.execute("PRAGMA synchronous=NORMAL")
 
             yield conn
 
@@ -299,22 +346,38 @@ class DatabaseManager:
                 await conn.execute(...)
             # Auto-commits on success, rolls back on error
         """
-        async with self.connection() as conn:
-            try:
-                yield conn
-                await conn.commit()
-            except Exception:
-                await conn.rollback()
-                raise
+        async with self._write_lock:
+            async with self.connection() as conn:
+                try:
+                    yield conn
+                    await conn.commit()
+                except Exception:
+                    await conn.rollback()
+                    raise
 
     async def execute(
         self,
         query: str,
         params: tuple = (),
     ) -> aiosqlite.Cursor:
-        """Execute a single query."""
-        async with self.connection() as conn:
-            return await conn.execute(query, params)
+        """Execute a single query.
+
+        Write statements (INSERT/UPDATE/DELETE/CREATE/DROP/ALTER) are
+        serialised through _write_lock and committed immediately so the
+        connection never returns to the pool with an open write-lock.
+        """
+        _write_prefixes = ("INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER", "REPLACE")
+        is_write = query.strip().upper().split()[0] in _write_prefixes if query.strip() else False
+
+        if is_write:
+            async with self._write_lock:
+                async with self.connection() as conn:
+                    cursor = await conn.execute(query, params)
+                    await conn.commit()
+                    return cursor
+        else:
+            async with self.connection() as conn:
+                return await conn.execute(query, params)
 
     async def execute_many(
         self,
@@ -322,9 +385,10 @@ class DatabaseManager:
         params_list: list[tuple],
     ) -> None:
         """Execute a query with multiple parameter sets."""
-        async with self.connection() as conn:
-            await conn.executemany(query, params_list)
-            await conn.commit()
+        async with self._write_lock:
+            async with self.connection() as conn:
+                await conn.executemany(query, params_list)
+                await conn.commit()
 
     async def fetch_one(
         self,

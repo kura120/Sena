@@ -173,7 +173,8 @@ src/
 │   │   ├── extensions.py            # /api/v1/extensions
 │   │   ├── telemetry.py             # /api/v1/telemetry
 │   │   ├── logs.py                  # /api/v1/logs
-│   │   ├── settings.py              # /api/v1/settings (NEW)
+│   │   ├── settings.py              # /api/v1/settings
+│   │   ├── personality.py           # /api/v1/personality (CRUD, approve/reject, audit, preview)
 │   │   ├── debug.py                 # /api/v1/debug
 │   │   └── processing.py            # /api/v1/processing
 │   ├── models/
@@ -182,8 +183,11 @@ src/
 │   ├── deps.py                      # Dependency injection
 │   └── websocket/
 │       └── manager.py               # WebSocket connection management
+│                                    # WSEventType includes PERSONALITY_UPDATE
 ├── core/
 │   ├── sena.py                      # Main orchestrator
+│   │                                # _get_full_system_prompt() injects personality block
+│   │                                # _post_process() triggers periodic personality inference
 │   ├── bootstrapper.py              # System initialization
 │   ├── telemetry.py                 # Metrics & event tracking
 │   ├── error_handler.py             # Error handling middleware
@@ -191,28 +195,49 @@ src/
 │   └── exceptions.py                # Custom exceptions
 ├── config/
 │   └── settings.py                  # Configuration (Pydantic Settings)
+│                                    # PersonalityConfig nested under MemoryConfig
+│                                    # Defaults: auto_approve_threshold=0.85, learning_mode="moderate"
+│                                    #           inferential_learning_requires_approval=True
 ├── database/
 │   ├── connection.py                # aiosqlite setup
+│   │                                # Migration v3: personality_fragments + personality_audit tables
 │   ├── models/                      # Data models (SQLAlchemy-like)
 │   └── repositories/                # Data access layer
 │       ├── conversation_repo.py
 │       ├── memory_repo.py
 │       ├── telemetry_repo.py
-│       └── extension_repo.py
+│       ├── extension_repo.py
+│       └── personality_repo.py      # CRUD for personality_fragments + personality_audit
 ├── llm/
 │   ├── manager.py                   # LLM orchestrator
+│   │                                # generate_simple(prompt, max_tokens) for internal LLM calls
 │   ├── router.py                    # Intent-based routing
-│   └── models/
-│       ├── base.py                  # BaseLLM interface
-│       ├── ollama_client.py         # Ollama implementation
-│       └── model_registry.py        # Multi-model management
+│   ├── models/
+│   │   ├── base.py                  # BaseLLM interface
+│   │   ├── ollama_client.py         # Ollama implementation
+│   │   └── model_registry.py        # Multi-model management
+│   └── prompts/
+│       ├── system_prompts.py        # Base system prompt + capabilities block builder
+│       ├── intent_prompts.py        # Intent classification + memory detection prompts
+│       └── personality_prompts.py   # PERSONALITY_INFERENCE_PROMPT, PERSONALITY_COMPRESSION_PROMPT
+│                                    # build_inference_prompt(), build_compression_prompt(),
+│                                    # build_personality_block()
 ├── memory/
 │   ├── manager.py                   # Memory orchestrator
 │   ├── short_term.py                # Conversation context
 │   ├── long_term.py                 # Persistent learning
+│   │                                # search() upgraded: embedding cosine-similarity ranking
+│   │                                # with keyword/LIKE fallback when embeddings unavailable
 │   ├── mem0_client.py               # mem0 integration
 │   ├── embeddings.py                # Vector embeddings
-│   └── retrieval.py                 # Memory search & ranking
+│   ├── retrieval.py                 # Memory search & ranking
+│   └── personality.py               # PersonalityManager singleton
+│                                    # get_personality_block() — cached, token-budget-aware
+│                                    # infer_from_conversation() — LLM extraction → pending fragments
+│                                    # store_explicit() — user-stated facts (auto-approved)
+│                                    # approve_fragment() / reject_fragment() / edit_and_approve()
+│                                    # _compress_fragments() — LLM summary when count > threshold
+│                                    # Emits personality_update WebSocket events
 ├── extensions/
 │   ├── __init__.py                  # ExtensionManager singleton
 │   ├── core/                        # Built-in extensions
@@ -232,22 +257,46 @@ src/ui/behind-the-sena/src/
 ├── main.tsx                         # React entry point
 ├── index.css                        # Global styles
 ├── components/                      # Reusable UI components
-│   ├── ChatTab.tsx
-│   ├── MemoryTab.tsx
-│   ├── SettingsTab.tsx
-│   ├── LogsTab.tsx
-│   ├── ExtensionsTab.tsx
-│   ├── TelemetryTab.tsx
-│   ├── MemoryCard.tsx               # Example reusable component
-│   └── (other shared components)
+│   ├── MemoryCard.tsx               # Long-term memory card
+│   ├── PersonalityCard.tsx          # Personality fragment card
+│   │                                # Props: fragment, onApprove, onReject, onDelete, onEdit
+│   │                                # Shows confidence %, status badge, type badge (Explicit/Inferred)
+│   │                                # Inline edit mode with Save & Approve flow
+│   ├── Badge.tsx
+│   ├── Card.tsx
+│   ├── EmptyState.tsx
+│   ├── HotbarButton.tsx
+│   ├── IconButton.tsx
+│   ├── LoadingState.tsx
+│   ├── PrimaryButton.tsx
+│   ├── SearchInput.tsx
+│   ├── SectionHeader.tsx
+│   ├── StatCard.tsx
+│   ├── TabHeader.tsx
+│   ├── TabLayout.tsx
+│   ├── ToggleSwitch.tsx
+│   ├── WindowFrame.tsx
+│   └── forms/
+│       ├── LLMModelSettingsForm.tsx
+│       ├── MemorySettingsForm.tsx
+│       ├── PersonalitySettingsForm.tsx  # Privacy toggles, learning mode radio group,
+│       │                                # auto-approve threshold slider, token budget fields
+│       ├── LoggingSettingsForm.tsx
+│       ├── TelemetrySettingsForm.tsx
+│       └── ExtensionSettingsForm.tsx
 ├── tabs/                            # Full tab implementations
-│   ├── ChatContent.tsx
-│   ├── MemoryContent.tsx
-│   ├── SettingsContent.tsx
-│   └── (other tabs)
+│   ├── Chat.tsx
+│   ├── Memory.tsx                   # Long-Term + Short-Term + Personality tabs
+│   │                                # Personality tab: filter bar, Run Inference button,
+│   │                                # Add Fact form, Preview block modal, WebSocket updates
+│   ├── Settings.tsx                 # Includes Personality section (PersonalitySettingsForm)
+│   ├── Extensions.tsx
+│   ├── Logs.tsx
+│   └── Telemetry.tsx
 ├── windows/                         # Larger UI sections
 │   ├── LoaderWindow.tsx             # Boot sequence display
-│   └── DashboardWindow.tsx          # Main interface
+│   ├── DashboardWindow.tsx          # Main interface
+│   └── SetupWindow.tsx
 └── utils/                           # Helper functions
     ├── api.ts                       # HTTP client
     └── websocket.ts                 # WebSocket utilities
@@ -426,14 +475,31 @@ await ws_manager.broadcast_memory_update(
     details={"content": content}
 )
 
+# Backend: Broadcast personality update (uses WSMessage directly)
+from src.api.websocket.manager import WSMessage, ws_manager
+
+message = WSMessage(
+    type="personality_update",
+    data={
+        "action": action,        # "approved" | "rejected" | "deleted" | "inferred"
+        "fragment_id": fragment_id,
+        "content": content,
+        "timestamp": datetime.now().isoformat(),
+    },
+)
+await ws_manager.broadcast(message, channel="personality")
+
 # Frontend: Subscribe and refresh
 useEffect(() => {
   const socket = new WebSocket("ws://127.0.0.1:8000/ws")
   socket.addEventListener("message", (event) => {
     const payload = JSON.parse(event.data)
     if (payload?.type === "memory_update") {
-      // Refresh memory list
       fetchMemories()
+    }
+    if (payload?.type === "personality_update") {
+      fetchPersonalityFragments()
+      fetchPersonalityStats()
     }
   })
 }, [])
@@ -443,7 +509,8 @@ useEffect(() => {
 - Only use WebSocket for real-time state updates (not initial data)
 - Always include `type` and `data` in message payload
 - Always add timestamps for diagnostics
-- Subscribe to specific channels (e.g., "memory", "processing")
+- Subscribe to specific channels (e.g., "memory", "processing", "personality")
+- Add new event types to `WSEventType` enum in `src/api/websocket/manager.py`
 
 ### Pattern 7: Error Handling & Logging
 Consistent error handling and structured logging:
@@ -652,6 +719,75 @@ Users download from: **GitHub Releases** → Download → Run executable
 
 ---
 
+## Personality System Reference
+
+The personality system gives Sena persistent knowledge of user preferences and traits.
+
+### Data Flow
+```
+User conversation
+    ↓
+PersonalityManager.infer_from_conversation()  [triggered every N messages in sena.py _post_process]
+    ↓
+LLM runs PERSONALITY_INFERENCE_PROMPT → JSON array of {content, confidence, category}
+    ↓
+Fragments created as "pending" (or "approved" if auto-approve policy allows)
+    ↓
+User reviews via Memory tab → Personality → approve / reject / edit
+    ↓
+PersonalityManager.get_personality_block()  [called by sena.py _get_full_system_prompt]
+    ↓
+Personality block injected into every system prompt (cached, invalidated on approval/rejection)
+```
+
+### Key Files
+| File | Role |
+|------|------|
+| `src/memory/personality.py` | `PersonalityManager` singleton — all personality logic |
+| `src/database/repositories/personality_repo.py` | DB access for fragments + audit log |
+| `src/llm/prompts/personality_prompts.py` | Inference + compression prompt templates |
+| `src/api/routes/personality.py` | REST API: CRUD, approve/reject, audit, preview, infer |
+| `src/config/settings.py` | `PersonalityConfig` inside `MemoryConfig` |
+| `src/ui/.../components/PersonalityCard.tsx` | Reusable fragment card with inline edit |
+| `src/ui/.../components/forms/PersonalitySettingsForm.tsx` | Settings UI for personality config |
+| `src/ui/.../tabs/Memory.tsx` | Personality tab (filter, approve/reject, Run Inference, Preview) |
+| `src/ui/.../tabs/Settings.tsx` | Personality section in Settings sidebar |
+
+### DB Tables (Migration v3)
+- `personality_fragments` — stores explicit + inferred fragments with status/confidence/category
+- `personality_audit` — append-only audit log of all approve/reject/edit/delete actions
+
+### Config Defaults (in `settings.memory.personality`)
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `inferential_learning_enabled` | `True` | Allow LLM to infer personality from conversations |
+| `inferential_learning_requires_approval` | `True` | Inferred facts need user approval (conservative) |
+| `auto_approve_enabled` | `False` | Auto-approve high-confidence fragments |
+| `auto_approve_threshold` | `0.85` | Minimum confidence for auto-approval |
+| `learning_mode` | `"moderate"` | `conservative` / `moderate` / `aggressive` |
+| `personality_token_budget` | `512` | Max tokens for personality block in system prompt |
+| `max_fragments_in_prompt` | `10` | Max fragments injected per request |
+| `compress_threshold` | `20` | Fragment count before LLM compression is triggered |
+
+### API Endpoints
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/v1/personality` | List fragments (filter: status, type) |
+| POST | `/api/v1/personality` | Add explicit (user-stated) fragment — auto-approved |
+| GET | `/api/v1/personality/pending` | Fragments awaiting approval |
+| GET | `/api/v1/personality/stats` | Aggregate counts by status/type |
+| GET | `/api/v1/personality/preview` | Preview composed personality block (bypasses cache) |
+| POST | `/api/v1/personality/infer` | Trigger manual inference from recent conversation |
+| GET | `/api/v1/personality/audit` | Global audit log |
+| GET | `/api/v1/personality/{id}` | Single fragment |
+| PUT | `/api/v1/personality/{id}` | Edit fragment content (+ optional approve) |
+| DELETE | `/api/v1/personality/{id}` | Delete fragment |
+| POST | `/api/v1/personality/{id}/approve` | Approve pending fragment |
+| POST | `/api/v1/personality/{id}/reject` | Reject pending fragment |
+| GET | `/api/v1/personality/{id}/audit` | Audit log for one fragment |
+
+---
+
 ## Common Mistakes to Avoid
 
 | Mistake | Fix |
@@ -664,6 +800,8 @@ Users download from: **GitHub Releases** → Download → Run executable
 | Forgetting WebSocket events | Emit after state changes |
 | No offline handling | Add fallback behavior |
 | Heavy synchronous computation | Use extensions for processing |
+| Bypassing PersonalityManager for fragment ops | Always go through `PersonalityManager` — it owns cache invalidation and audit |
+| Adding new WSEventType without updating enum | Add to `WSEventType` in `src/api/websocket/manager.py` |
 
 ---
 
@@ -678,6 +816,8 @@ Users download from: **GitHub Releases** → Download → Run executable
 | New extension | `src/extensions/core/[name].py` | Follow extension interface |
 | New reusable component | `src/ui/.../components/` | Named export, props interface |
 | New event type | `src/api/websocket/manager.py` | Add to `WSEventType` enum |
+| New personality fragment operation | `src/memory/personality.py` + `src/api/routes/personality.py` | Follow existing approve/reject pattern |
+| New personality inference prompt | `src/llm/prompts/personality_prompts.py` | Add prompt constant + builder function |
 | Bug fix | Test first, fix in layer, test again | TDD approach |
 
 ---
@@ -696,4 +836,4 @@ Do not guess. Do not proceed with assumptions. Do not leave clarifications in co
 ---
 
 **Last Updated**: February 2026
-**Current Phase**: Modular architecture established, ready for feature expansion
+**Current Phase**: Personality system implemented — three-segment memory (Short-Term, Long-Term, Personality), embedding-based retrieval, dynamic system prompt composition, full approval UI

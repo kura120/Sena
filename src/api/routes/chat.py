@@ -2,6 +2,7 @@
 """Chat API routes for main conversation endpoint."""
 
 import json
+import re
 import uuid
 from datetime import datetime
 from typing import Any, AsyncGenerator
@@ -17,6 +18,31 @@ from src.memory.manager import MemoryManager
 from src.utils.logger import logger
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+_REMEMBER_RE = re.compile(
+    r"^remember\s+(?:this|that|these|those|the\s+following|following)?\s*:?\s*(.+)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _extract_remember_content(message: str) -> str | None:
+    """Return the content the user wants stored, or None if not a store request.
+
+    Handles patterns like:
+    - "remember this number: 6"  → "number: 6"
+    - "remember that I prefer dark mode"  → "I prefer dark mode"
+    - "remember: my API key is abc123"  → "my API key is abc123"
+    - "remember my birthday is March 15"  → "my birthday is March 15"
+    """
+    m = _REMEMBER_RE.match(message.strip())
+    if not m:
+        return None
+    content = m.group(1).strip().lstrip(":").strip()
+    return content if content else None
 
 
 @router.post(
@@ -50,19 +76,27 @@ async def chat(
 
         logger.info("Adding message to memory context...")
         try:
-            remember_match = None
-            lowered = request.message.strip().lower()
-            if (
-                lowered.startswith("remember this")
-                or lowered.startswith("remember:")
-                or lowered.startswith("remember ")
-            ):
-                remember_match = request.message.split(":", 1)[-1].strip()
-                if remember_match:
-                    await memory_mgr.remember(
-                        content=remember_match, metadata={"session_id": session_id, "source": "explicit_remember"}
-                    )
-            # Add user message to memory context
+            # --- Explicit "remember ..." store detection ---
+            remember_content = _extract_remember_content(request.message)
+            if remember_content:
+                await memory_mgr.remember(
+                    content=remember_content,
+                    metadata={
+                        "session_id": session_id,
+                        "source": "explicit_remember",
+                        "context": "User explicitly asked Sena to remember this information",
+                        "origin": "user_explicit",
+                        "original_message": request.message,
+                        "timestamp": timestamp.isoformat(),
+                    },
+                )
+                logger.info(
+                    f"Stored explicit memory: '{remember_content[:80]}...' "
+                    if len(remember_content) > 80
+                    else f"Stored explicit memory: '{remember_content}'"
+                )
+
+            # Add user message to short-term context
             await memory_mgr.add_to_context(
                 content=request.message,
                 role="user",
@@ -106,7 +140,14 @@ async def chat(
         try:
             # Extract learnings from conversation if enabled
             conversation = await memory_mgr.get_conversation_context()
-            await memory_mgr.extract_and_store_learnings(conversation=conversation, metadata={"session_id": session_id})
+            await memory_mgr.extract_and_store_learnings(
+                conversation=conversation,
+                metadata={
+                    "session_id": session_id,
+                    "context": "Auto-extracted from conversation",
+                    "origin": "auto_extraction",
+                },
+            )
             logger.debug("Learnings extracted successfully")
         except Exception as learn_err:
             logger.warning(f"Learning extraction error: {learn_err}", exc_info=True)
@@ -191,6 +232,55 @@ async def stream_chat(
         raise
     except Exception as e:
         logger.error(f"Stream setup error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post(
+    "/session/title",
+    response_model=dict[str, Any],
+    summary="Generate a session title",
+    description="Use Sena's LLM to generate a short title for a session based on the first user message.",
+)
+async def generate_session_title(
+    request: dict[str, Any],
+    sena: Sena = Depends(get_sena),
+) -> dict[str, Any]:
+    """Generate a concise session title from the opening user message."""
+    try:
+        message = (request.get("message") or "").strip()
+        if not message:
+            raise HTTPException(status_code=400, detail="message is required")
+
+        if not sena.is_initialized:
+            raise HTTPException(status_code=503, detail="Sena not initialized")
+
+        from src.llm.prompts.intent_prompts import SESSION_TITLE_PROMPT
+
+        prompt = SESSION_TITLE_PROMPT.format(message=message[:300])
+
+        # Use the LLM manager directly for a quick, low-cost call
+        if sena._llm_manager is None:
+            raise HTTPException(status_code=503, detail="LLM manager not ready")
+
+        from src.core.constants import ModelType
+
+        response = await sena._llm_manager.generate(
+            user_input=prompt,
+            model_type=ModelType.FAST,
+            max_tokens=20,
+            temperature=0.4,
+        )
+
+        raw_title = (response.content or "").strip().strip('"').strip("'").strip()
+        # Truncate to a sane length
+        title = raw_title[:60] if raw_title else "New Session"
+
+        return {"status": "success", "title": title}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Session title generation error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
