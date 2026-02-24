@@ -8,7 +8,6 @@ import {
   Send,
   Loader,
   User,
-  Bot,
   Plus,
   Trash2,
   Pencil,
@@ -118,28 +117,83 @@ function saveSessions(sessions: ChatSession[], activeId: string) {
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
+// ─── Sena avatar ─────────────────────────────────────────────────────────────
+
+/**
+ * Sena's chat avatar — uses the Sena logo PNG.
+ * Falls back to a purple gradient circle if the image fails to load.
+ */
+const SenaAvatar: React.FC<{ className?: string }> = ({ className = "" }) => {
+  const [imgError, setImgError] = useState(false);
+  return (
+    <div
+      className={`w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 shadow-md mt-1 overflow-hidden ${
+        imgError
+          ? "bg-gradient-to-br from-purple-500 to-blue-500"
+          : "bg-slate-900"
+      } ${className}`}
+    >
+      {imgError ? (
+        <Sparkles className="w-4 h-4 text-white" />
+      ) : (
+        <img
+          src="/assets/sena-logo.png"
+          alt="Sena"
+          className="w-full h-full object-contain p-0.5"
+          onError={() => setImgError(true)}
+        />
+      )}
+    </div>
+  );
+};
+
+// ─── Thinking panel ───────────────────────────────────────────────────────────
+
 type ThinkingPanelProps = {
   stages: ThinkingStage[];
   isLive: boolean;
+  /** Controlled open state. Pass undefined to use internal state. */
+  open?: boolean;
+  /** Called when the user toggles the panel. Only used in controlled mode. */
+  onToggle?: (open: boolean) => void;
 };
 
-const ThinkingPanel: React.FC<ThinkingPanelProps> = ({ stages, isLive }) => {
-  const [open, setOpen] = useState(true);
+const ThinkingPanel: React.FC<ThinkingPanelProps> = ({
+  stages,
+  isLive,
+  open: controlledOpen,
+  onToggle,
+}) => {
+  // When open/onToggle are provided we run in controlled mode; otherwise we
+  // manage state internally so the live panel still works standalone.
+  const [internalOpen, setInternalOpen] = useState(true);
+  const isControlled = controlledOpen !== undefined;
+  const open = isControlled ? controlledOpen : internalOpen;
 
-  // Auto-collapse when thinking is done
+  const toggle = () => {
+    const next = !open;
+    if (isControlled) {
+      onToggle?.(next);
+    } else {
+      setInternalOpen(next);
+    }
+  };
+
+  // In uncontrolled (live) mode: auto-collapse once thinking finishes.
   useEffect(() => {
+    if (isControlled) return;
     if (!isLive && stages.length > 0) {
-      const t = setTimeout(() => setOpen(false), 1200);
+      const t = setTimeout(() => setInternalOpen(false), 1200);
       return () => clearTimeout(t);
     }
-  }, [isLive, stages.length]);
+  }, [isLive, stages.length, isControlled]);
 
   if (stages.length === 0) return null;
 
   return (
     <div className="mt-2 rounded-lg border border-slate-700/60 bg-slate-900/60 text-xs overflow-hidden">
       <button
-        onClick={() => setOpen((v) => !v)}
+        onClick={toggle}
         className="w-full flex items-center gap-2 px-3 py-2 text-slate-400 hover:text-slate-200 transition-colors"
       >
         <Brain className="w-3.5 h-3.5 text-purple-400 flex-shrink-0" />
@@ -216,6 +270,10 @@ export const Chat: React.FC = () => {
 
   // Thinking stages (live during current request)
   const [liveStages, setLiveStages] = useState<ThinkingStage[]>([]);
+
+  // Per-message thinking-panel open state (controlled, keyed by message id).
+  // Starts true (open) when a message is created; user can toggle at any time.
+  const [thinkingOpen, setThinkingOpen] = useState<Record<string, boolean>>({});
 
   // Rename session
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -436,15 +494,22 @@ export const Chat: React.FC = () => {
         });
 
         const capturedStages = [...liveStages]; // snapshot at response time
+        const msgId = (Date.now() + 1).toString();
 
         const senaMsg: ChatMessage = {
-          id: (Date.now() + 1).toString(),
+          id: msgId,
           role: "sena",
           timestamp: new Date().toLocaleTimeString(),
           content:
             data.response ?? data.message ?? data.content ?? "No response",
           thinkingStages: capturedStages,
         };
+
+        // Start the per-message panel in open state so the user sees the
+        // thought process immediately; they can collapse it manually.
+        if (capturedStages.length > 0) {
+          setThinkingOpen((prev) => ({ ...prev, [msgId]: true }));
+        }
 
         setSessions((prev) =>
           prev.map((s) =>
@@ -675,9 +740,7 @@ export const Chat: React.FC = () => {
               )}
             </button>
 
-            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-purple-500 to-cyan-500 flex items-center justify-center flex-shrink-0">
-              <Sparkles className="w-4 h-4 text-white" />
-            </div>
+            <SenaAvatar className="rounded-full mt-0" />
 
             <div className="flex-1 min-w-0">
               <h2 className="text-sm font-semibold text-slate-50 truncate">
@@ -717,12 +780,8 @@ export const Chat: React.FC = () => {
                       }}
                       className={`flex gap-3 ${msg.role === "user" ? "justify-end" : "justify-start"}`}
                     >
-                      {/* Sena avatar */}
-                      {msg.role === "sena" && (
-                        <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center flex-shrink-0 shadow-md mt-1">
-                          <Bot className="w-4 h-4 text-white" />
-                        </div>
-                      )}
+                      {/* Sena avatar — uses the Sena logo */}
+                      {msg.role === "sena" && <SenaAvatar />}
 
                       <div
                         className={`flex flex-col max-w-[78%] ${msg.role === "user" ? "items-end" : "items-start"}`}
@@ -843,7 +902,7 @@ export const Chat: React.FC = () => {
                               {msg.timestamp}
                             </span>
 
-                            {/* Thinking panel attached to Sena messages */}
+                            {/* Thinking panel attached to Sena messages — controlled open state */}
                             {msg.role === "sena" &&
                               msg.thinkingStages &&
                               msg.thinkingStages.length > 0 && (
@@ -851,6 +910,13 @@ export const Chat: React.FC = () => {
                                   <ThinkingPanel
                                     stages={msg.thinkingStages}
                                     isLive={false}
+                                    open={thinkingOpen[msg.id] ?? true}
+                                    onToggle={(next) =>
+                                      setThinkingOpen((prev) => ({
+                                        ...prev,
+                                        [msg.id]: next,
+                                      }))
+                                    }
                                   />
                                 </div>
                               )}
@@ -876,9 +942,7 @@ export const Chat: React.FC = () => {
                   animate={{ opacity: 1, y: 0 }}
                   className="flex gap-3 items-start"
                 >
-                  <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center flex-shrink-0 mt-1">
-                    <Bot className="w-4 h-4 text-white" />
-                  </div>
+                  <SenaAvatar />
                   <div className="flex flex-col gap-2 max-w-[78%]">
                     <div className="px-4 py-2.5 rounded-2xl rounded-tl-sm bg-slate-800/80 border border-slate-700/50">
                       <div className="flex gap-1.5 items-center">
