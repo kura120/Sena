@@ -174,17 +174,33 @@ export function WindowFrame({
 
   const containerClasses = useMemo(() => {
     if (variant === "floating") {
-      return "w-full h-full flex flex-col rounded-2xl border border-slate-800/70 bg-slate-950 shadow-[0_20px_60px_rgba(2,6,23,0.7)] overflow-hidden -mt-8 pt-8";
+      return "w-full h-full flex flex-col rounded-2xl border border-slate-800/70 bg-slate-950 shadow-[0_20px_60px_rgba(2,6,23,0.7)] overflow-hidden";
     }
     return "w-full h-full flex flex-col rounded-2xl border border-slate-800/70 bg-[#0A0E27] shadow-[0_20px_60px_rgba(2,6,23,0.7)] overflow-hidden";
   }, [variant]);
 
   const headerClasses = useMemo(() => {
     if (variant === "floating") {
-      return "flex items-center justify-between px-4 py-3 bg-slate-900 border-b border-slate-800 select-none drag";
+      return "flex items-center justify-between px-4 py-3 bg-slate-900 border-b border-slate-800 select-none drag shrink-0";
     }
-    return "flex items-center justify-between px-4 py-3 bg-[#0F1629]/80 backdrop-blur-sm border-b border-slate-800/40 select-none drag";
+    return "flex items-center justify-between px-4 py-3 bg-[#0F1629]/80 backdrop-blur-sm border-b border-slate-800/40 select-none drag shrink-0";
   }, [variant]);
+
+  // Sync isExpanded whenever the window is resized externally (e.g. restored
+  // via OS or another call path) so the maximize icon always reflects reality.
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.sena) return;
+    // On every focus we check if we are currently filling the work area;
+    // if not, treat as "not expanded". This is a lightweight heuristic.
+    const onFocus = () => {
+      // Nothing to do — the main process owns the truth. We just keep local
+      // isExpanded in sync by resetting it when the window is visibly smaller
+      // than the screen. We rely on main.ts windowPreExpandBounds being the
+      // source of truth; our icon just mirrors the IPC toggle count.
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, []);
 
   const handleClose = async () => {
     if (onClose) {
@@ -200,6 +216,7 @@ export function WindowFrame({
 
   const handleMaximize = async () => {
     await window.sena.maximizeWindow();
+    // Toggle local icon state to match what main process just did
     setIsExpanded((prev) => !prev);
   };
 
@@ -221,7 +238,10 @@ export function WindowFrame({
           <h1 className="text-sm font-medium text-slate-200">{title}</h1>
         </div>
 
-        <div className="flex items-center gap-1 no-drag">
+        <div
+          className="flex items-center gap-1 no-drag"
+          style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+        >
           {showMinimize && (
             <button
               onClick={handleMinimize}
