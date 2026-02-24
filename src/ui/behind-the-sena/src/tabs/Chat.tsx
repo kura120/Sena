@@ -22,9 +22,8 @@ import {
 } from "lucide-react";
 import { fetchJson } from "../utils/api";
 import {
-  openWebSocket,
-  closeWebSocket,
-  sendSubscription,
+  connectSharedSocket,
+  addMessageHandler,
   WebSocketMessage,
 } from "../utils/websocket";
 
@@ -310,10 +309,31 @@ export const Chat: React.FC = () => {
   }, [sessions, activeSessionId]);
 
   // ── Scroll to bottom ─────────────────────────────────────────────────────────
+  // Auto-scroll only while a request is in-flight. Once loading flips to false
+  // the user scrolls freely — we never hijack their position after that.
 
+  const prevLoadingRef = useRef(false);
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, activeSessionId, loading]);
+    const justStarted = !prevLoadingRef.current && loading;
+    prevLoadingRef.current = loading;
+    if (justStarted) {
+      // User just hit send — snap to bottom so their message is visible.
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [loading]);
+
+  // While loading, re-scroll on every liveStages update so the expanding
+  // ThinkingPanel (which grows as stages arrive) never gets cut off.
+  useEffect(() => {
+    if (loading) {
+      messagesEndRef.current?.scrollIntoView({ behavior: "instant" });
+    }
+  }, [liveStages, loading]);
+
+  // Scroll to bottom immediately when the user switches sessions.
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "instant" });
+  }, [activeSessionId]);
 
   // ── Keep active session valid ─────────────────────────────────────────────────
 
@@ -335,10 +355,11 @@ export const Chat: React.FC = () => {
   }, [renamingId]);
 
   // ── WebSocket for thinking stages ─────────────────────────────────────────────
+  // Uses the app-wide singleton socket — never creates a new connection on mount.
+  // addMessageHandler returns an unsubscribe fn that removes this handler on unmount
+  // without closing the shared socket.
 
   useEffect(() => {
-    let socket: WebSocket | null = null;
-
     const handleMessage = (payload: WebSocketMessage) => {
       if (payload.type === "processing_update") {
         const data = payload.data as
@@ -369,17 +390,9 @@ export const Chat: React.FC = () => {
       }
     };
 
-    const connect = async () => {
-      socket = await openWebSocket("/ws", {
-        onOpen: () => sendSubscription(socket!, ["processing"]),
-        onMessage: handleMessage,
-      });
-    };
-
-    void connect();
-    return () => {
-      if (socket) closeWebSocket(socket);
-    };
+    const unsubscribe = addMessageHandler(handleMessage);
+    void connectSharedSocket("/ws", ["processing", "memory", "personality"]);
+    return unsubscribe;
   }, []);
 
   // ── Session operations ────────────────────────────────────────────────────────
@@ -516,9 +529,13 @@ export const Chat: React.FC = () => {
         };
 
         // Start the per-message panel in open state so the user sees the
-        // thought process immediately; they can collapse it manually.
+        // thought process immediately, then auto-collapse after 1.2 s.
+        // The user can reopen it at any time via the toggle.
         if (capturedStages.length > 0) {
           setThinkingOpen((prev) => ({ ...prev, [msgId]: true }));
+          setTimeout(() => {
+            setThinkingOpen((prev) => ({ ...prev, [msgId]: false }));
+          }, 1200);
         }
 
         setSessions((prev) =>
