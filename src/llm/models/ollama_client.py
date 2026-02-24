@@ -36,6 +36,7 @@ class OllamaClient(BaseLLM):
         temperature: float = 0.7,
         context_window: int = 8192,
         timeout: int = 120,
+        keep_alive: str = "-1",
     ):
         super().__init__(
             model_name=model_name,
@@ -45,6 +46,7 @@ class OllamaClient(BaseLLM):
         )
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.keep_alive = keep_alive
         self._client: Optional[httpx.AsyncClient] = None
 
     async def _get_client(self) -> httpx.AsyncClient:
@@ -96,6 +98,7 @@ class OllamaClient(BaseLLM):
                     "model": self.model_name,
                     "prompt": "Hello",
                     "stream": False,
+                    "keep_alive": self.keep_alive,
                     "options": {
                         "num_predict": 1,
                     },
@@ -147,6 +150,7 @@ class OllamaClient(BaseLLM):
                 "model": self.model_name,
                 "messages": [m.to_dict() for m in messages],
                 "stream": False,
+                "keep_alive": self.keep_alive,
                 "options": {
                     "num_predict": max_tokens or self.max_tokens,
                     "temperature": temperature if temperature is not None else self.temperature,
@@ -223,6 +227,7 @@ class OllamaClient(BaseLLM):
                 "model": self.model_name,
                 "messages": [m.to_dict() for m in messages],
                 "stream": True,
+                "keep_alive": self.keep_alive,
                 "options": {
                     "num_predict": max_tokens or self.max_tokens,
                     "temperature": temperature if temperature is not None else self.temperature,
