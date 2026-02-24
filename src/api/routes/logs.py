@@ -5,12 +5,19 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 
 from src.config.settings import get_app_data_dir
+from src.utils.logger import logger
+
+# In-memory watermark set by clear_logs(). Any log entry whose timestamp is
+# <= this value is hidden from all subsequent reads. Resets on process restart.
+_cleared_at: str | None = None
 
 router = APIRouter(prefix="/logs", tags=["Logs"])
 
@@ -77,6 +84,11 @@ def _load_logs(limit: int, level: str, source: str) -> list[dict]:
             parsed = _parse_line(line)
             if not parsed:
                 continue
+            # Skip entries that predate the last clear() call. Because we
+            # iterate newest-first, once we cross the watermark everything
+            # remaining is also older — break early for efficiency.
+            if _cleared_at and parsed["timestamp"] <= _cleared_at:
+                break
             if any(source in parsed["source"].lower() for source in IGNORE_SOURCES):
                 continue
             if parsed["message"].startswith(">>> REQUEST") or parsed["message"].startswith("<<< RESPONSE"):
@@ -143,20 +155,80 @@ async def get_log_sources():
     }
 
 
+class SummarizeRequest(BaseModel):
+    messages: list[str]
+
+
+@router.post(
+    "/summarize",
+    response_model=dict,
+    summary="Generate LLM summary for a log group",
+    description=(
+        "Given a list of raw log message strings (a process group's children), "
+        "returns a concise one-line summary produced by the fast LLM model."
+    ),
+)
+async def summarize_logs(body: SummarizeRequest) -> dict:
+    """Generate a short summary for a collection of log lines using the fast model."""
+    if not body.messages:
+        raise HTTPException(status_code=400, detail="messages list is empty")
+
+    # Trim to at most 40 lines to keep the prompt small.
+    lines = body.messages[:40]
+    joined = "\n".join(f"- {m}" for m in lines)
+
+    prompt = (
+        "You are a concise log analyst. Given the following log lines from a single "
+        "processing pipeline step, write ONE short summary sentence (max 15 words) "
+        "that describes what happened. Do not include any preamble.\n\n"
+        f"Log lines:\n{joined}\n\nSummary:"
+    )
+
+    summary = ""
+    try:
+        from src.api.deps import get_sena  # local import to avoid circular dep
+
+        sena = await get_sena()
+        if sena._llm_manager is None:
+            raise RuntimeError("LLM manager not ready")
+        raw = await sena._llm_manager.generate_simple(prompt=prompt, max_tokens=60)
+        summary = raw.strip().strip('"').strip("'")
+    except Exception as e:
+        logger.warning(f"Log summarization failed: {e}")
+        # Fallback: return first non-empty message truncated
+        for m in lines:
+            if m.strip():
+                summary = m.strip()[:120]
+                break
+
+    return {"status": "success", "summary": summary or "Processing complete"}
+
+
 @router.post(
     "/clear",
     response_model=dict,
     summary="Clear logs",
-    description="Delete stored log files (both main and session logs).",
+    description="Hide all current log entries by recording a cleared-at watermark. "
+    "Session log files (not held open) are also deleted from disk.",
 )
 async def clear_logs():
-    deleted_files: list[str] = []
-    for log_file in _iter_log_files():
-        try:
-            log_file.unlink()
-            deleted_files.append(log_file.name)
-        except FileNotFoundError:
-            continue
-    if not deleted_files:
-        return {"status": "noop", "deleted": []}
-    return {"status": "success", "deleted": deleted_files}
+    global _cleared_at
+
+    # Record watermark — same millisecond-precision format loguru writes.
+    _cleared_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:23]
+
+    # Best-effort delete of session files (they are not held open by loguru).
+    deleted_sessions: list[str] = []
+    if SESSION_DIR.exists():
+        for session_file in SESSION_DIR.glob("session_*.log"):
+            try:
+                session_file.unlink()
+                deleted_sessions.append(session_file.name)
+            except (FileNotFoundError, PermissionError, OSError):
+                pass
+
+    return {
+        "status": "success",
+        "cleared_at": _cleared_at,
+        "deleted_sessions": deleted_sessions,
+    }

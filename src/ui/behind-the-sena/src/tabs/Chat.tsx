@@ -188,7 +188,8 @@ const ThinkingPanel: React.FC<ThinkingPanelProps> = ({
     }
   }, [isLive, stages.length, isControlled]);
 
-  if (stages.length === 0) return null;
+  // In live mode show the panel even with no stages yet (user sees "thinking…")
+  if (stages.length === 0 && !isLive) return null;
 
   return (
     <div className="mt-2 rounded-lg border border-slate-700/60 bg-slate-900/60 text-xs overflow-hidden">
@@ -270,6 +271,8 @@ export const Chat: React.FC = () => {
 
   // Thinking stages (live during current request)
   const [liveStages, setLiveStages] = useState<ThinkingStage[]>([]);
+  // Ref mirror — stays in sync so sendMessage never reads a stale closure value.
+  const liveStagesRef = useRef<ThinkingStage[]>([]);
 
   // Per-message thinking-panel open state (controlled, keyed by message id).
   // Starts true (open) when a message is created; user can toggle at any time.
@@ -344,18 +347,22 @@ export const Chat: React.FC = () => {
           data.stage !== "complete" &&
           data.stage !== "error"
         ) {
-          setLiveStages((prev) => [
-            ...prev,
-            {
-              stage: data.stage!,
-              details: data.details ?? "",
-              timestamp: new Date().toLocaleTimeString(undefined, {
-                hour: "2-digit",
-                minute: "2-digit",
-                second: "2-digit",
-              }),
-            },
-          ]);
+          setLiveStages((prev) => {
+            const next = [
+              ...prev,
+              {
+                stage: data.stage!,
+                details: data.details ?? "",
+                timestamp: new Date().toLocaleTimeString(undefined, {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                  second: "2-digit",
+                }),
+              },
+            ];
+            liveStagesRef.current = next;
+            return next;
+          });
         }
       }
     };
@@ -481,6 +488,7 @@ export const Chat: React.FC = () => {
       );
       setInput("");
       setLiveStages([]);
+      liveStagesRef.current = [];
       setLoading(true);
 
       try {
@@ -493,7 +501,7 @@ export const Chat: React.FC = () => {
           body: { message: text, session_id: activeSession.id },
         });
 
-        const capturedStages = [...liveStages]; // snapshot at response time
+        const capturedStages = [...liveStagesRef.current]; // read ref — never stale
         const msgId = (Date.now() + 1).toString();
 
         const senaMsg: ChatMessage = {
@@ -540,9 +548,10 @@ export const Chat: React.FC = () => {
       } finally {
         setLoading(false);
         setLiveStages([]);
+        liveStagesRef.current = [];
       }
     },
-    [input, loading, activeSession, messages, liveStages, tryAutoTitle],
+    [input, loading, activeSession, messages, liveStagesRef, tryAutoTitle],
   );
 
   // ── Edit last message ──────────────────────────────────────────────────────────
@@ -961,12 +970,11 @@ export const Chat: React.FC = () => {
                       </div>
                     </div>
 
-                    {/* Live thinking stages */}
-                    {liveStages.length > 0 && (
-                      <div className="w-full max-w-sm">
-                        <ThinkingPanel stages={liveStages} isLive={true} />
-                      </div>
-                    )}
+                    {/* Live thinking stages — always show while loading so the user
+                        sees "Sena is thinking…" even before the first stage arrives */}
+                    <div className="w-full max-w-sm">
+                      <ThinkingPanel stages={liveStages} isLive={true} />
+                    </div>
                   </div>
                 </motion.div>
               )}
