@@ -1,0 +1,145 @@
+app:
+  name: Sena
+  version: 1.0.0
+  debug: false
+llm:
+  provider: ollama
+  base_url: http://localhost:11434
+  timeout: 120
+  models:
+    fast:
+      name: gemma2:2b
+      max_tokens: 2048
+      temperature: 0.7
+      context_window: 8192
+    critical:
+      name: gpt-oss:120b
+      max_tokens: 4096
+      temperature: 0.5
+      context_window: 32768
+    code:
+      name: deepseek-coder:6.7b
+      max_tokens: 8192
+      temperature: 0.3
+      context_window: 16384
+    router:
+      name: mistral:7b-instruct
+      max_tokens: 1024
+      temperature: 0.2
+      context_window: 4096
+  allow_runtime_switch: true
+  switch_cooldown: 5
+memory:
+  provider: mem0
+  mem0:
+    mode: library
+    api_key: null
+    base_url: null
+  vector_db:
+    provider: chroma
+    persist_dir: data/memory/chroma
+    collection_name: sena_memories
+  embeddings:
+    model: nomic-embed-text:latest
+    dimension: 768
+  short_term:
+    max_messages: 20
+    expire_after: 3600
+  long_term:
+    auto_extract: true
+    extract_interval: 10
+  retrieval:
+    dynamic_threshold: 0.6
+    max_results: 5
+    reranking: true
+extensions:
+  core_path: src/extensions/core
+  user_path: src/extensions/user
+  generated_path: data/extensions/generated
+  hot_reload: true
+  watch_interval: 2.0
+  security:
+    sandbox_enabled: true
+    allowed_imports:
+    - os
+    - sys
+    - json
+    - re
+    - datetime
+    - pathlib
+    - typing
+    - collections
+    - itertools
+    - functools
+    - math
+    - random
+    - string
+    - urllib
+    - base64
+    blocked_functions:
+    - eval
+    - exec
+    - compile
+    - __import__
+    - open
+    max_execution_time: 30
+    max_memory_mb: 256
+  generation:
+    max_attempts: 3
+    test_timeout: 10
+    auto_enable: false
+api:
+  host: 127.0.0.1
+  port: 8000
+  workers: 1
+  cors:
+    enabled: true
+    origins:
+    - http://localhost:3000
+    - http://localhost:3001
+    - http://127.0.0.1:3000
+    - http://127.0.0.1:3001
+  rate_limit:
+    enabled: false
+    requests_per_minute: 60
+  websocket:
+    heartbeat_interval: 30
+    max_connections: 10
+database:
+  path: data/memory/sena.db
+  pool_size: 5
+  timeout: 30
+  auto_migrate: true
+logging:
+  level: INFO
+  file:
+    enabled: true
+    path: data/logs/sena.log
+    max_bytes: 10485760
+    backup_count: 5
+  session:
+    enabled: true
+    path: data/logs/sessions
+  database_level: WARNING
+telemetry:
+  enabled: true
+  metrics:
+    collect_interval: 60
+    retention_days: 30
+  performance:
+    track_response_times: true
+    track_memory_usage: true
+    track_extension_performance: true
+bootstrapper:
+  run_on_startup: true
+  benchmarks_on_startup: true
+  store_benchmark_results: true
+  benchmark_history_limit: 10
+  performance_thresholds:
+    model_response_max: 5.0
+    memory_retrieval_max: 0.5
+    extension_load_max: 1.0
+ui:
+  behind_the_sena_port: 3000
+  sena_app_port: 3001
+  auto_open_browser: false

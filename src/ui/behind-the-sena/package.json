@@ -1,0 +1,61 @@
+{
+  "name": "behind-the-sena",
+  "version": "1.0.0",
+  "description": "Sena - Self-Evolving AI Assistant Debug Dashboard",
+  "author": "kura120",
+  "private": true,
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "vite",
+    "dev:api": "cd ../../.. && .venv\\Scripts\\activate.bat && python -m uvicorn src.api.server:app --host 127.0.0.1 --port 8000 --reload",
+    "build": "tsc && vite build",
+    "build:electron": "tsc --project tsconfig.electron.json",
+    "preview": "vite preview --port 5173",
+    "electron": "npm run build:electron && electron .",
+    "electron:dev": "npm run build:electron && concurrently \"npm run dev\" \"wait-on http://localhost:5173 && electron .\"",
+    "dist": "npm run build && npm run build:electron && electron-builder"
+  },
+  "dependencies": {
+    "@tailwindcss/postcss": "^4.1.18",
+    "framer-motion": "^11.0.0",
+    "lucide-react": "^0.563.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-markdown": "^9.0.1",
+    "react-syntax-highlighter": "^15.5.0",
+    "react-router-dom": "^6.21.0",
+    "yaml": "^2.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "@types/react-router-dom": "^5.3.3",
+    "@types/react-syntax-highlighter": "^15.5.13",
+    "@vitejs/plugin-react": "^4.0.0",
+    "autoprefixer": "^10.4.0",
+    "concurrently": "^8.2.0",
+    "electron": "^35.7.5",
+    "electron-builder": "^26.7.0",
+    "postcss": "^8.4.0",
+    "tailwindcss": "4.1.18",
+    "typescript": "^5.5.0",
+    "vite": "^7.3.1",
+    "wait-on": "^7.2.0"
+  },
+  "build": {
+    "appId": "com.sena.app",
+    "productName": "Sena",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.png"
+    }
+  }
+}

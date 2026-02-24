@@ -1,0 +1,32 @@
+# src/llm/prompts/__init__.py
+"""Prompt templates for Sena."""
+
+from src.llm.prompts.intent_prompts import (
+    CONVERSATION_SUMMARY_PROMPT,
+    EXTENSION_GENERATION_PROMPT,
+    INTENT_CLASSIFICATION_PROMPT,
+    MEMORY_EXTRACTION_PROMPT,
+    MEMORY_RELEVANCE_PROMPT,
+)
+from src.llm.prompts.system_prompts import (
+    SYSTEM_PROMPT,
+    SYSTEM_PROMPT_ANALYSIS,
+    SYSTEM_PROMPT_CODE,
+    SYSTEM_PROMPT_CONCISE,
+    SYSTEM_PROMPT_CREATIVE,
+    get_system_prompt,
+)
+
+__all__ = [
+    "SYSTEM_PROMPT",
+    "SYSTEM_PROMPT_CONCISE",
+    "SYSTEM_PROMPT_CREATIVE",
+    "SYSTEM_PROMPT_CODE",
+    "SYSTEM_PROMPT_ANALYSIS",
+    "get_system_prompt",
+    "INTENT_CLASSIFICATION_PROMPT",
+    "MEMORY_EXTRACTION_PROMPT",
+    "MEMORY_RELEVANCE_PROMPT",
+    "CONVERSATION_SUMMARY_PROMPT",
+    "EXTENSION_GENERATION_PROMPT",
+]

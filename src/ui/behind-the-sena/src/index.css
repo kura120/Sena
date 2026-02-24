@@ -1,0 +1,100 @@
+@import "tailwindcss";
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  background: transparent;
+  color: #f8fafc;
+}
+
+body {
+  font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+#root {
+  display: flex;
+}
+
+#root > * {
+  flex: 1;
+  min-height: 100%;
+  width: 100%;
+}
+
+/* Electron window dragging */
+.drag {
+  -webkit-app-region: drag;
+}
+
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.5);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(71, 85, 105, 0.8);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.9);
+}
+
+/* Smooth animations */
+* {
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.chat-markdown {
+  color: #e2e8f0;
+  overflow-x: hidden;
+  max-width: 100%;
+}
+
+.chat-markdown p {
+  margin: 0 0 0.5rem 0;
+}
+
+.chat-markdown pre,
+.chat-markdown code {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chat-markdown pre {
+  max-width: 100%;
+  overflow-x: hidden;
+  background: rgba(15, 23, 42, 0.7);
+  border: 1px solid rgba(51, 65, 85, 0.6);
+  border-radius: 0.75rem;
+  padding: 0.75rem 0.9rem;
+  margin: 0.6rem 0;
+}
+
+.chat-markdown code {
+  background: rgba(15, 23, 42, 0.5);
+  border-radius: 0.35rem;
+  padding: 0.1rem 0.3rem;
+}
+
+.chat-code-block {
+  background: rgba(15, 23, 42, 0.7);
+  border: 1px solid rgba(51, 65, 85, 0.6);
+  border-radius: 0.75rem;
+  padding: 0.75rem 0.9rem;
+  margin: 0.6rem 0;
+  overflow-x: hidden;
+  max-width: 100%;
+}

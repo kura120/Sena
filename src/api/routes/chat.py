@@ -1,0 +1,247 @@
+# src/api/routes/chat.py
+"""Chat API routes for main conversation endpoint."""
+
+import json
+import uuid
+from datetime import datetime
+from typing import Any, AsyncGenerator
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
+
+from src.api.deps import get_memory_manager, get_sena
+from src.api.models.requests import ChatRequest
+from src.api.models.responses import ChatMetadata, ChatResponse, ErrorResponse
+from src.core.sena import Sena
+from src.memory.manager import MemoryManager
+from src.utils.logger import logger
+
+router = APIRouter(prefix="/chat", tags=["Chat"])
+
+
+@router.post(
+    "",
+    response_model=ChatResponse,
+    responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    summary="Send a message to Sena",
+    description="Process a user message and get a response from Sena.",
+    status_code=200,
+)
+async def chat(
+    request: ChatRequest,
+    sena: Sena = Depends(get_sena),
+    memory_mgr: MemoryManager = Depends(get_memory_manager),
+) -> ChatResponse:
+    """Process a chat message and return response."""
+    session_id = None
+    try:
+        logger.info(f"=== CHAT REQUEST START ===")
+        logger.info(f"Request payload: {request.model_dump()}")
+
+        if not request.message or not request.message.strip():
+            logger.warning(f"Empty message received")
+            raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+        session_id = request.session_id or str(uuid.uuid4())[:12]
+        timestamp = datetime.now()
+
+        logger.info(f"Processing chat - session={session_id}, message_length={len(request.message)}")
+        logger.debug(f"Message preview: {request.message[:100]}...")
+
+        logger.info("Adding message to memory context...")
+        try:
+            remember_match = None
+            lowered = request.message.strip().lower()
+            if (
+                lowered.startswith("remember this")
+                or lowered.startswith("remember:")
+                or lowered.startswith("remember ")
+            ):
+                remember_match = request.message.split(":", 1)[-1].strip()
+                if remember_match:
+                    await memory_mgr.remember(
+                        content=remember_match, metadata={"session_id": session_id, "source": "explicit_remember"}
+                    )
+            # Add user message to memory context
+            await memory_mgr.add_to_context(
+                content=request.message,
+                role="user",
+                metadata={"session_id": session_id, "timestamp": timestamp.isoformat()},
+            )
+            logger.debug("Message added to memory successfully")
+        except Exception as mem_err:
+            logger.warning(f"Memory context error: {mem_err}, continuing without memory", exc_info=True)
+
+        # Process the message through Sena
+        logger.info("Processing message through Sena...")
+        logger.info(f"Sena initialized: {sena.is_initialized}")
+        response = None
+        response_content = ""
+        try:
+            response = await sena.process(
+                user_input=request.message,
+                stream=False,
+            )
+            logger.info(f"Sena processing complete, response type: {type(response)}")
+            response_content = getattr(response, "content", None) or getattr(response, "response", "")
+            logger.debug(f"Response content length: {len(response_content)}")
+        except Exception as process_err:
+            logger.error(f"SENA PROCESSING ERROR: {type(process_err).__name__}: {process_err}", exc_info=True)
+            # Fallback response
+            response_content = f"I encountered an error processing your request: {str(process_err)}. Please ensure Ollama is running and try again."
+
+        logger.info("Storing assistant response in memory...")
+        try:
+            # Add assistant response to memory
+            await memory_mgr.add_to_context(
+                content=response_content,
+                role="assistant",
+                metadata={"session_id": session_id, "timestamp": datetime.now().isoformat()},
+            )
+            logger.debug("Response stored in memory successfully")
+        except Exception as mem_err:
+            logger.warning(f"Memory storage error: {mem_err}", exc_info=True)
+
+        logger.info("Extracting learnings from conversation...")
+        try:
+            # Extract learnings from conversation if enabled
+            conversation = await memory_mgr.get_conversation_context()
+            await memory_mgr.extract_and_store_learnings(conversation=conversation, metadata={"session_id": session_id})
+            logger.debug("Learnings extracted successfully")
+        except Exception as learn_err:
+            logger.warning(f"Learning extraction error: {learn_err}", exc_info=True)
+
+        logger.info(f"Building chat response for session {session_id}")
+        if response:
+            chat_meta = {
+                "session_id": session_id,
+                "model": getattr(response, "model", "ollama"),
+                "prompt_tokens": int(getattr(response, "prompt_tokens", 0) or 0),
+                "completion_tokens": int(getattr(response, "completion_tokens", 0) or 0),
+                "total_tokens": int(getattr(response, "total_tokens", 0) or 0),
+                "duration_ms": float(getattr(response, "duration_ms", 0) or 0),
+                "message_length": len(request.message),
+                "response_length": len(response_content),
+            }
+            logger.info(f"[CHAT] {json.dumps(chat_meta, separators=(',', ':'))}")
+        chat_response = ChatResponse(
+            response=response_content,
+            session_id=session_id,
+            metadata=ChatMetadata(
+                model_used=getattr(response, "model", "ollama") if response else "ollama",
+                processing_time_ms=getattr(response, "duration_ms", 0) if response else 0,
+                intent=None,
+                confidence=0.0,
+                tokens_used=0,
+                extensions_used=[],
+            ),
+        )
+        logger.info(f"=== CHAT REQUEST COMPLETE === Response length: {len(response_content)}")
+        return chat_response
+
+    except HTTPException as http_exc:
+        logger.error(f"HTTP exception in chat: status={http_exc.status_code}, detail={http_exc.detail}")
+        raise
+    except Exception as e:
+        logger.error(f"=== CHAT REQUEST FAILED ===")
+        logger.error(f"Exception type: {type(e).__name__}")
+        logger.error(f"Exception message: {str(e)}")
+        logger.error(f"Session: {session_id}")
+        logger.error(f"Full traceback:", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
+
+
+@router.get(
+    "/stream",
+    summary="Stream chat response",
+    description="Get real-time streaming response from Sena",
+)
+async def stream_chat(
+    message: str = Query(..., min_length=1),
+    session_id: str | None = None,
+    sena: Sena = Depends(get_sena),
+    memory_mgr: MemoryManager = Depends(get_memory_manager),
+) -> StreamingResponse:
+    """Stream a chat response in real-time."""
+    try:
+        if not message or not message.strip():
+            raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+        session_id = session_id or str(uuid.uuid4())[:12]
+
+        # Add to memory
+        await memory_mgr.add_to_context(content=message, role="user", metadata={"session_id": session_id})
+
+        async def response_generator() -> AsyncGenerator[str, None]:
+            """Stream response tokens."""
+            try:
+                async for chunk in sena.stream(
+                    user_input=message,
+                ):
+                    yield f"data: {chunk}\n\n"
+            except Exception as e:
+                logger.error(f"Stream error: {e}")
+                yield f"data: ERROR: {str(e)}\n\n"
+
+        return StreamingResponse(
+            response_generator(), media_type="text/event-stream", headers={"X-Session-ID": session_id}
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Stream setup error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get(
+    "/history",
+    response_model=dict[str, Any],
+    summary="Get conversation history",
+    description="Retrieve recent conversation history for a session",
+)
+async def get_history(
+    session_id: str | None = None,
+    limit: int = Query(20, ge=1, le=100),
+    memory_mgr: MemoryManager = Depends(get_memory_manager),
+) -> dict[str, Any]:
+    """Get conversation history for a session."""
+    try:
+        context = await memory_mgr.get_conversation_context(limit=limit)
+
+        return {
+            "session_id": session_id or "default",
+            "history": context,
+            "message_count": len(context.split("\n")) if context else 0,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"History retrieval error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post(
+    "/clear",
+    response_model=dict[str, Any],
+    summary="Clear conversation context",
+    description="Clear the short-term memory buffer",
+)
+async def clear_context(
+    session_id: str | None = None,
+    memory_mgr: MemoryManager = Depends(get_memory_manager),
+) -> dict[str, Any]:
+    """Clear conversation context for a session."""
+    try:
+        cleared = await memory_mgr.clear_context()
+
+        return {
+            "status": "success",
+            "session_id": session_id or "default",
+            "items_cleared": cleared,
+        }
+
+    except Exception as e:
+        logger.error(f"Clear context error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
