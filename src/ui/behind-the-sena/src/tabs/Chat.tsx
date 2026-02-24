@@ -22,8 +22,9 @@ import {
 } from "lucide-react";
 import { fetchJson } from "../utils/api";
 import {
-  addMessageHandler,
-  connectSharedSocket,
+  openWebSocket,
+  closeWebSocket,
+  sendSubscription,
   WebSocketMessage,
 } from "../utils/websocket";
 
@@ -187,7 +188,9 @@ const ThinkingPanel: React.FC<ThinkingPanelProps> = ({
     }
   }, [isLive, stages.length, isControlled]);
 
-  if (stages.length === 0) return null;
+  // In live mode render even with no stages yet so the user sees "Sena is thinking…"
+  // immediately on send. In non-live (per-message) mode, hide if there is nothing to show.
+  if (stages.length === 0 && !isLive) return null;
 
   return (
     <div className="mt-2 rounded-lg border border-slate-700/60 bg-slate-900/60 text-xs overflow-hidden">
@@ -269,6 +272,9 @@ export const Chat: React.FC = () => {
 
   // Thinking stages (live during current request)
   const [liveStages, setLiveStages] = useState<ThinkingStage[]>([]);
+  // Ref mirror — always holds the latest accumulated stages so sendMessage
+  // can read the current value without being subject to stale closure capture.
+  const liveStagesRef = useRef<ThinkingStage[]>([]);
 
   // Per-message thinking-panel open state (controlled, keyed by message id).
   // Starts true (open) when a message is created; user can toggle at any time.
@@ -331,9 +337,9 @@ export const Chat: React.FC = () => {
   // ── WebSocket for thinking stages ─────────────────────────────────────────────
 
   useEffect(() => {
-    void connectSharedSocket("/ws");
+    let socket: WebSocket | null = null;
 
-    const unsubscribe = addMessageHandler((payload: WebSocketMessage) => {
+    const handleMessage = (payload: WebSocketMessage) => {
       if (payload.type === "processing_update") {
         const data = payload.data as
           | { stage?: string; details?: string }
@@ -343,23 +349,37 @@ export const Chat: React.FC = () => {
           data.stage !== "complete" &&
           data.stage !== "error"
         ) {
-          setLiveStages((prev) => [
-            ...prev,
-            {
-              stage: data.stage!,
-              details: data.details ?? "",
-              timestamp: new Date().toLocaleTimeString(undefined, {
-                hour: "2-digit",
-                minute: "2-digit",
-                second: "2-digit",
-              }),
-            },
-          ]);
+          setLiveStages((prev) => {
+            const next = [
+              ...prev,
+              {
+                stage: data.stage!,
+                details: data.details ?? "",
+                timestamp: new Date().toLocaleTimeString(undefined, {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                  second: "2-digit",
+                }),
+              },
+            ];
+            liveStagesRef.current = next;
+            return next;
+          });
         }
       }
-    });
+    };
 
-    return unsubscribe;
+    const connect = async () => {
+      socket = await openWebSocket("/ws", {
+        onOpen: () => sendSubscription(socket!, ["processing"]),
+        onMessage: handleMessage,
+      });
+    };
+
+    void connect();
+    return () => {
+      if (socket) closeWebSocket(socket);
+    };
   }, []);
 
   // ── Session operations ────────────────────────────────────────────────────────
@@ -470,6 +490,7 @@ export const Chat: React.FC = () => {
       );
       setInput("");
       setLiveStages([]);
+      liveStagesRef.current = [];
       setLoading(true);
 
       try {
@@ -482,7 +503,7 @@ export const Chat: React.FC = () => {
           body: { message: text, session_id: activeSession.id },
         });
 
-        const capturedStages = [...liveStages]; // snapshot at response time
+        const capturedStages = [...liveStagesRef.current]; // read ref — never stale
         const msgId = (Date.now() + 1).toString();
 
         const senaMsg: ChatMessage = {
@@ -529,9 +550,10 @@ export const Chat: React.FC = () => {
       } finally {
         setLoading(false);
         setLiveStages([]);
+        liveStagesRef.current = [];
       }
     },
-    [input, loading, activeSession, messages, liveStages, tryAutoTitle],
+    [input, loading, activeSession, messages, liveStagesRef, tryAutoTitle],
   );
 
   // ── Edit last message ──────────────────────────────────────────────────────────
@@ -950,12 +972,11 @@ export const Chat: React.FC = () => {
                       </div>
                     </div>
 
-                    {/* Live thinking stages */}
-                    {liveStages.length > 0 && (
-                      <div className="w-full max-w-sm">
-                        <ThinkingPanel stages={liveStages} isLive={true} />
-                      </div>
-                    )}
+                    {/* Live thinking stages — always mount while loading so
+                        "Sena is thinking…" appears before the first stage arrives */}
+                    <div className="w-full max-w-sm">
+                      <ThinkingPanel stages={liveStages} isLive={true} />
+                    </div>
                   </div>
                 </motion.div>
               )}
