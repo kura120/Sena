@@ -131,6 +131,7 @@ class ModelRegistry:
             temperature=config.temperature,
             context_window=config.context_window,
             timeout=settings.timeout,
+            keep_alive=self._settings.llm.ollama_keep_alive,
         )
 
         self._models[model_type] = ModelInfo(
