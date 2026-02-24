@@ -148,7 +148,7 @@ const SenaAvatar: React.FC<{ className?: string }> = ({ className = "" }) => {
 
 // ─── Thinking panel ───────────────────────────────────────────────────────────
 
-type ThinkingPanelProps = {
+type ProcessingPanelProps = {
   stages: ThinkingStage[];
   isLive: boolean;
   /** Controlled open state. Pass undefined to use internal state. */
@@ -157,7 +157,7 @@ type ThinkingPanelProps = {
   onToggle?: (open: boolean) => void;
 };
 
-const ThinkingPanel: React.FC<ThinkingPanelProps> = ({
+const ProcessingPanel: React.FC<ProcessingPanelProps> = ({
   stages,
   isLive,
   open: controlledOpen,
@@ -199,7 +199,7 @@ const ThinkingPanel: React.FC<ThinkingPanelProps> = ({
       >
         <Brain className="w-3.5 h-3.5 text-purple-400 flex-shrink-0" />
         <span className="font-medium">
-          {isLive ? "Sena is thinking…" : "Thought process"}
+          {isLive ? "Sena is thinking…" : "Processing"}
         </span>
         {isLive && (
           <span className="flex gap-0.5 ml-1">
@@ -233,7 +233,10 @@ const ThinkingPanel: React.FC<ThinkingPanelProps> = ({
           >
             <div className="px-3 pb-3 space-y-1.5 border-t border-slate-700/40">
               {stages.map((s, i) => (
-                <div key={i} className="flex items-start gap-2 pt-1.5">
+                <div
+                  key={`${s.stage}-${i}`}
+                  className="flex items-start gap-2 pt-1.5"
+                >
                   <span className="w-1.5 h-1.5 rounded-full bg-purple-400/60 mt-1 flex-shrink-0" />
                   <div className="min-w-0">
                     <span className="text-slate-300 font-medium">
@@ -516,7 +519,16 @@ export const Chat: React.FC = () => {
           body: { message: text, session_id: activeSession.id },
         });
 
-        const capturedStages = [...liveStagesRef.current]; // read ref — never stale
+        // Deduplicate: keep only the last occurrence of each stage key so
+        // repeated rapid fires (e.g. 3x "Classifying intent") collapse into one.
+        const rawStages = [...liveStagesRef.current];
+        const capturedStages = rawStages.reduceRight<ThinkingStage[]>(
+          (acc, s) => {
+            if (!acc.find((x) => x.stage === s.stage)) acc.unshift(s);
+            return acc;
+          },
+          [],
+        );
         const msgId = (Date.now() + 1).toString();
 
         const senaMsg: ChatMessage = {
@@ -935,7 +947,7 @@ export const Chat: React.FC = () => {
                               msg.thinkingStages &&
                               msg.thinkingStages.length > 0 && (
                                 <div className="w-full max-w-sm">
-                                  <ThinkingPanel
+                                  <ProcessingPanel
                                     stages={msg.thinkingStages}
                                     isLive={false}
                                     open={thinkingOpen[msg.id] ?? true}
@@ -989,10 +1001,10 @@ export const Chat: React.FC = () => {
                       </div>
                     </div>
 
-                    {/* Live thinking stages — always mount while loading so
+                    {/* Live processing stages — always mount while loading so
                         "Sena is thinking…" appears before the first stage arrives */}
                     <div className="w-full max-w-sm">
-                      <ThinkingPanel stages={liveStages} isLive={true} />
+                      <ProcessingPanel stages={liveStages} isLive={true} />
                     </div>
                   </div>
                 </motion.div>
