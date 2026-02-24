@@ -35,8 +35,8 @@
     "@vitejs/plugin-react": "^4.0.0",
     "autoprefixer": "^10.4.0",
     "concurrently": "^8.2.0",
-    "electron": "^35.7.5",
-    "electron-builder": "^26.7.0",
+    "electron": "^40.6.0",
+    "electron-builder": "^26.8.1",
     "postcss": "^8.4.0",
     "tailwindcss": "4.1.18",
     "typescript": "^5.5.0",
@@ -51,11 +51,12 @@
     },
     "files": [
       "dist/**/*",
-      "dist-electron/**/*"
+      "dist-electron/**/*",
+      "assets/**/*"
     ],
     "win": {
       "target": "nsis",
-      "icon": "assets/icon.png"
+      "icon": "assets/sena-logo.png"
     }
   }
 }

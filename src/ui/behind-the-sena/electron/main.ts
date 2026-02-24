@@ -15,9 +15,43 @@ import { parse as parseYaml } from "yaml";
 const windows = new Map<string, BrowserWindow>();
 const floatingOrder: string[] = [];
 const floatingMoved = new Set<string>();
+
+/**
+ * Re-assert always-on-top on every blur so Windows 11 cannot lower the
+ * window's z-order when it loses focus (taskbar thumbnails, Alt-Tab overlay,
+ * Snap Assist, etc. all trigger a transient z-order drop on unfocus).
+ *
+ * Strategy:
+ *  1. Immediately cycle off→on to invalidate the stale z-order entry.
+ *  2. After a short delay, call moveTop() to push the window to the very top
+ *     of the z-stack once DWM has finished processing the focus change.
+ */
+function keepOnTop(win: BrowserWindow) {
+  win.setAlwaysOnTop(true, "screen-saver");
+  win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  win.on("blur", () => {
+    if (win.isDestroyed()) return;
+    // Cycle off→on forces DWM to refresh the z-order entry immediately.
+    win.setAlwaysOnTop(false);
+    win.setAlwaysOnTop(true, "screen-saver");
+    // After DWM finishes settling the focus change, push to top again.
+    setTimeout(() => {
+      if (!win.isDestroyed()) {
+        win.setAlwaysOnTop(true, "screen-saver");
+        win.moveTop();
+      }
+    }, 50);
+  });
+}
+const ICON_PATH = path.join(__dirname, "../assets/sena-logo.png");
+
 let serverProcess: ChildProcess | null = null;
 let isDev = false;
 let currentHotkey = "Home";
+// Simulates keyup behaviour for globalShortcut (which only fires on keydown/repeat).
+// Each keydown/repeat resets the timer; the toggle fires 150 ms after the LAST
+// event, i.e. once the key has actually been released.
+let toggleTimeout: ReturnType<typeof setTimeout> | null = null;
 let loaderReadyResolver: (() => void) | null = null;
 let setupWindowOpen = false;
 
@@ -200,19 +234,28 @@ function createLoaderWindow() {
     width: 600,
     height: 420,
     frame: false,
+    thickFrame: false,
     transparent: true,
     backgroundColor: "#00000000",
     resizable: false,
     alwaysOnTop: true,
     focusable: true,
     acceptFirstMouse: true,
+    skipTaskbar: true,
     center: true,
+    icon: ICON_PATH,
+    // Hide until content is painted so no gray Chromium background flashes.
+    show: false,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
       backgroundThrottling: false,
       preload: path.join(__dirname, "preload.js"),
     },
+  });
+
+  loaderWindow.once("ready-to-show", () => {
+    loaderWindow.show();
   });
 
   if (isDev) {
@@ -225,8 +268,7 @@ function createLoaderWindow() {
 
   windows.set("loader", loaderWindow);
 
-  loaderWindow.setAlwaysOnTop(true, "screen-saver");
-  loaderWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  keepOnTop(loaderWindow);
 
   loaderWindow.on("closed", () => {
     windows.delete("loader");
@@ -249,6 +291,7 @@ function createSetupWindow() {
     width: 660,
     height: 620,
     frame: false,
+    thickFrame: false,
     transparent: true,
     backgroundColor: "#00000000",
     resizable: true,
@@ -257,7 +300,11 @@ function createSetupWindow() {
     alwaysOnTop: true,
     focusable: true,
     acceptFirstMouse: true,
+    skipTaskbar: true,
     center: true,
+    icon: ICON_PATH,
+    // Hide until content is painted so no gray Chromium background flashes.
+    show: false,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -266,8 +313,11 @@ function createSetupWindow() {
     },
   });
 
-  setupWindow.setAlwaysOnTop(true, "screen-saver");
-  setupWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  keepOnTop(setupWindow);
+
+  setupWindow.once("ready-to-show", () => {
+    setupWindow.show();
+  });
 
   if (isDev) {
     setupWindow.loadURL("http://localhost:5173/#/setup");
@@ -296,17 +346,25 @@ function createDashboardWindow() {
 
   const dashboardWindow = new BrowserWindow({
     width: 500,
-    height: 80,
+    // Extra height above the hotbar bar gives the button tooltips room to render
+    // without being clipped by the window edge.
+    height: 110,
     x: Math.floor((width - 500) / 2),
-    y: height - 100,
+    // Keep the same ~20 px bottom gap: y + height = workAreaHeight - 20
+    y: height - 130,
     frame: false,
+    thickFrame: false,
     transparent: true,
+    backgroundColor: "#00000000",
     resizable: false,
     alwaysOnTop: true,
     focusable: true,
     acceptFirstMouse: true,
     skipTaskbar: true,
     autoHideMenuBar: true,
+    icon: ICON_PATH,
+    // Hide until content is painted so no gray Chromium background flashes.
+    show: false,
     ...(process.platform === "win32"
       ? {
           titleBarStyle: "hidden",
@@ -322,9 +380,10 @@ function createDashboardWindow() {
 
   dashboardWindow.setMenuBarVisibility(false);
   dashboardWindow.setAutoHideMenuBar(true);
-  dashboardWindow.setAlwaysOnTop(true, "screen-saver");
-  dashboardWindow.setVisibleOnAllWorkspaces(true, {
-    visibleOnFullScreen: true,
+  keepOnTop(dashboardWindow);
+
+  dashboardWindow.once("ready-to-show", () => {
+    dashboardWindow.show();
   });
 
   if (isDev) {
@@ -358,11 +417,13 @@ function createFloatingWindow(feature: string, title: string) {
     width: 700,
     height: 550,
     frame: false,
+    thickFrame: false,
     transparent: true,
     backgroundColor: "#00000000",
     alwaysOnTop: true,
     focusable: true,
     acceptFirstMouse: true,
+    icon: ICON_PATH,
     show: false,
     ...(process.platform === "win32"
       ? {
@@ -377,8 +438,7 @@ function createFloatingWindow(feature: string, title: string) {
     },
   });
 
-  floatingWindow.setAlwaysOnTop(true, "screen-saver");
-  floatingWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  keepOnTop(floatingWindow);
 
   if (isDev) {
     floatingWindow.loadURL(`http://localhost:5173/#/${feature}`);
@@ -509,14 +569,21 @@ app.whenReady().then(async () => {
     loaderWindow.close();
     const dashboardWindow = createDashboardWindow();
 
-    // Register the initial hotkey (Home key by default)
+    // Register the initial hotkey (Home key by default).
+    // Defer the toggle until 150 ms after the last keydown so the hotbar only
+    // reacts when the key is fully released (key-repeat events arrive every
+    // ~30-50 ms, so a 150 ms quiet period reliably means the key is up).
     globalShortcut.register(currentHotkey, () => {
-      if (dashboardWindow.isVisible()) {
-        dashboardWindow.hide();
-      } else {
-        dashboardWindow.show();
-        dashboardWindow.focus();
-      }
+      if (toggleTimeout) clearTimeout(toggleTimeout);
+      toggleTimeout = setTimeout(() => {
+        toggleTimeout = null;
+        if (dashboardWindow.isVisible()) {
+          dashboardWindow.hide();
+        } else {
+          dashboardWindow.show();
+          dashboardWindow.focus();
+        }
+      }, 150);
     });
   } catch (error) {
     sendToWindow("loader", "startup-error", {
@@ -566,12 +633,16 @@ ipcMain.handle("signal-setup-complete", () => {
     const dashboardWindow = createDashboardWindow();
 
     globalShortcut.register(currentHotkey, () => {
-      if (dashboardWindow.isVisible()) {
-        dashboardWindow.hide();
-      } else {
-        dashboardWindow.show();
-        dashboardWindow.focus();
-      }
+      if (toggleTimeout) clearTimeout(toggleTimeout);
+      toggleTimeout = setTimeout(() => {
+        toggleTimeout = null;
+        if (dashboardWindow.isVisible()) {
+          dashboardWindow.hide();
+        } else {
+          dashboardWindow.show();
+          dashboardWindow.focus();
+        }
+      }, 150);
     });
   }
 
@@ -649,12 +720,16 @@ ipcMain.handle("set-hotkey", async (_event, key: string) => {
   const dashboardWindow = windows.get("dashboard");
   if (dashboardWindow) {
     globalShortcut.register(currentHotkey, () => {
-      if (dashboardWindow.isVisible()) {
-        dashboardWindow.hide();
-      } else {
-        dashboardWindow.show();
-        dashboardWindow.focus();
-      }
+      if (toggleTimeout) clearTimeout(toggleTimeout);
+      toggleTimeout = setTimeout(() => {
+        toggleTimeout = null;
+        if (dashboardWindow.isVisible()) {
+          dashboardWindow.hide();
+        } else {
+          dashboardWindow.show();
+          dashboardWindow.focus();
+        }
+      }, 150);
     });
   }
 

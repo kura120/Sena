@@ -12,6 +12,20 @@ const yaml_1 = require("yaml");
 const windows = new Map();
 const floatingOrder = [];
 const floatingMoved = new Set();
+/**
+ * Re-assert always-on-top on every blur so Windows 11 cannot lower the
+ * window's z-order when it loses focus (taskbar thumbnails, Alt-Tab overlay,
+ * Snap Assist, etc. all trigger a transient z-order drop on unfocus).
+ */
+function keepOnTop(win) {
+    win.setAlwaysOnTop(true, "screen-saver");
+    win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    win.on("blur", () => {
+        if (!win.isDestroyed()) {
+            win.setAlwaysOnTop(true, "screen-saver");
+        }
+    });
+}
 let serverProcess = null;
 let isDev = false;
 let currentHotkey = "Home";
@@ -185,8 +199,7 @@ function createLoaderWindow() {
         });
     }
     windows.set("loader", loaderWindow);
-    loaderWindow.setAlwaysOnTop(true, "screen-saver");
-    loaderWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    keepOnTop(loaderWindow);
     loaderWindow.on("closed", () => {
         windows.delete("loader");
     });
@@ -221,8 +234,7 @@ function createSetupWindow() {
             preload: path_1.default.join(__dirname, "preload.js"),
         },
     });
-    setupWindow.setAlwaysOnTop(true, "screen-saver");
-    setupWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    keepOnTop(setupWindow);
     if (isDev) {
         setupWindow.loadURL("http://localhost:5173/#/setup");
     }
@@ -271,10 +283,7 @@ function createDashboardWindow() {
     });
     dashboardWindow.setMenuBarVisibility(false);
     dashboardWindow.setAutoHideMenuBar(true);
-    dashboardWindow.setAlwaysOnTop(true, "screen-saver");
-    dashboardWindow.setVisibleOnAllWorkspaces(true, {
-        visibleOnFullScreen: true,
-    });
+    keepOnTop(dashboardWindow);
     if (isDev) {
         dashboardWindow.loadURL("http://localhost:5173/#/dashboard");
     }
@@ -320,8 +329,7 @@ function createFloatingWindow(feature, title) {
             preload: path_1.default.join(__dirname, "preload.js"),
         },
     });
-    floatingWindow.setAlwaysOnTop(true, "screen-saver");
-    floatingWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    keepOnTop(floatingWindow);
     if (isDev) {
         floatingWindow.loadURL(`http://localhost:5173/#/${feature}`);
     }

@@ -8,8 +8,9 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "types": ["vite/client", "node"]
+    "noEmit": true,
+    "types": ["vite/client", "node"],
   },
   "include": ["src", "src/**/*.d.ts"],
-  "exclude": ["node_modules", "dist", "dist-main"]
+  "exclude": ["node_modules", "dist", "dist-main"],
 }

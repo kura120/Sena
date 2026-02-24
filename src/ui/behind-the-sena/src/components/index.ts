@@ -22,7 +22,3 @@ export { HotbarButton } from "./HotbarButton";
 
 // ── Input components ──────────────────────────────────────────────────────────
 export { SearchInput } from "./SearchInput";
-/**
- * @deprecated Use SearchInput instead. Kept for backwards compatibility.
- */
-export { SearchBox } from "./SearchBox";
