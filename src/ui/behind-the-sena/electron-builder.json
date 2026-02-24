@@ -1,10 +1,6 @@
 {
   "extends": null,
-  "files": [
-    "dist/**/*",
-    "dist-main/**/*",
-    "node_modules/**/*"
-  ],
+  "files": ["dist/**/*", "dist-main/**/*", "node_modules/**/*"],
   "directories": {
     "buildResources": "assets"
   },
@@ -12,30 +8,46 @@
     "target": [
       {
         "target": "nsis",
-        "arch": [
-          "x64"
-        ]
+        "arch": ["x64"]
       },
       {
         "target": "portable",
-        "arch": [
-          "x64"
-        ]
+        "arch": ["x64"]
       }
     ],
-    "icon": "assets/icon.png"
+    "icon": "assets/sena-logo.ico"
+  },
+  "mac": {
+    "target": [
+      {
+        "target": "dmg",
+        "arch": ["x64", "arm64"]
+      }
+    ],
+    "icon": "assets/sena-logo.png",
+    "category": "public.app-category.productivity"
+  },
+  "linux": {
+    "target": [
+      {
+        "target": "AppImage",
+        "arch": ["x64"]
+      }
+    ],
+    "icon": "assets/sena-logo.png",
+    "category": "Utility"
   },
   "nsis": {
     "oneClick": false,
     "allowToChangeInstallationDirectory": true,
     "createDesktopShortcut": true,
     "createStartMenuShortcut": true,
-    "shortcutName": "Sena Debug Dashboard",
-    "installerIcon": "assets/icon.png",
-    "uninstallerIcon": "assets/icon.png",
-    "installerHeaderIcon": "assets/icon.png"
+    "shortcutName": "Sena",
+    "installerIcon": "assets/sena-logo.ico",
+    "uninstallerIcon": "assets/sena-logo.ico",
+    "installerHeaderIcon": "assets/sena-logo.ico"
   },
   "portable": {
-    "artifactName": "Behind The Sena.exe"
+    "artifactName": "Sena.exe"
   }
 }

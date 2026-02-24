@@ -2,6 +2,7 @@ import {
   app,
   BrowserWindow,
   ipcMain,
+  nativeImage,
   screen,
   net,
   globalShortcut,
@@ -62,10 +63,54 @@ function keepOnTop(win: BrowserWindow) {
     }, 50);
   });
 }
-const ICON_PATH = path.join(__dirname, "../assets/sena-logo.png");
+/**
+ * Resolve the best available icon for the current platform.
+ *   Windows  → .ico  (multi-size, required for taskbar/Alt-Tab/shortcuts)
+ *   macOS    → .icns (required for Dock / packaged .app)
+ *   Linux    → .png  (any size; 256×256 or 512×512 recommended)
+ *
+ * Falls back to the PNG on any platform if the preferred format is absent
+ * (e.g. during development before packaging icons are generated).
+ */
+function resolveIconPath(): string {
+  const base = path.join(__dirname, "../assets");
+  if (process.platform === "win32") {
+    const ico = path.join(base, "sena-logo.ico");
+    if (fs.existsSync(ico)) return ico;
+  } else if (process.platform === "darwin") {
+    const icns = path.join(base, "sena-logo.icns");
+    if (fs.existsSync(icns)) return icns;
+  }
+  return path.join(base, "sena-logo.png");
+}
+
+const ICON_PATH = resolveIconPath();
+
+/**
+ * Pre-built NativeImage so we create it once and reuse for every BrowserWindow
+ * and the macOS Dock / Windows taskbar overlay.
+ */
+const APP_ICON = nativeImage.createFromPath(ICON_PATH);
 
 let serverProcess: ChildProcess | null = null;
 let isDev = false;
+
+/**
+ * Per-platform icon bootstrap.
+ * Must be called after app.whenReady() so the dock/taskbar APIs are available.
+ */
+function bootstrapAppIcon() {
+  if (process.platform === "win32") {
+    // Sets the icon shown in the Windows taskbar, Alt-Tab switcher, and jump
+    // lists for the whole process (not just individual windows).
+    app.setAppUserModelId("com.sena.app");
+  } else if (process.platform === "darwin") {
+    // setDock icon shows the custom logo in the macOS Dock while the app runs.
+    if (!APP_ICON.isEmpty()) {
+      app.dock?.setIcon(APP_ICON);
+    }
+  }
+}
 let currentHotkey = "Home";
 // Simulates keyup behaviour for globalShortcut (which only fires on keydown/repeat).
 // Each keydown/repeat resets the timer; the toggle fires 150 ms after the LAST
@@ -550,6 +595,9 @@ function trackWindowMovement(windowId: string, win: BrowserWindow) {
  */
 app.whenReady().then(async () => {
   isDev = !app.isPackaged;
+
+  // Apply platform-specific icon to taskbar / Dock before any window opens.
+  bootstrapAppIcon();
 
   // Create loader window
   const loaderWindow = createLoaderWindow();
