@@ -188,7 +188,9 @@ const ThinkingPanel: React.FC<ThinkingPanelProps> = ({
     }
   }, [isLive, stages.length, isControlled]);
 
-  if (stages.length === 0) return null;
+  // In live mode render even with no stages yet so the user sees "Sena is thinking…"
+  // immediately on send. In non-live (per-message) mode, hide if there is nothing to show.
+  if (stages.length === 0 && !isLive) return null;
 
   return (
     <div className="mt-2 rounded-lg border border-slate-700/60 bg-slate-900/60 text-xs overflow-hidden">
@@ -961,12 +963,11 @@ export const Chat: React.FC = () => {
                       </div>
                     </div>
 
-                    {/* Live thinking stages */}
-                    {liveStages.length > 0 && (
-                      <div className="w-full max-w-sm">
-                        <ThinkingPanel stages={liveStages} isLive={true} />
-                      </div>
-                    )}
+                    {/* Live thinking stages — always mount while loading so
+                        "Sena is thinking…" appears before the first stage arrives */}
+                    <div className="w-full max-w-sm">
+                      <ThinkingPanel stages={liveStages} isLive={true} />
+                    </div>
                   </div>
                 </motion.div>
               )}
