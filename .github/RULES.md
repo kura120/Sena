@@ -1,0 +1,19 @@
+create a PR issue in GitHub for each change (topic):
+-- Review what you're going to do with me beforehand briefly
+-- If you are confused about anything explicitly, ask me, do not ask useless questions or questions that you know you can decide for certainly what is best to produce a PRODUCTION-READY environment for an executable Electron app.
+-- Program to your best capabilities, provide a BRIEF summary of what you have done
+-- FOLLOW [copilot-instructions](copilot-instructions.md)'s rules and use for context, if the context you are looking for is not provided, include it properly and briefly enough to save performance. If the context you are provided is outdated, append it briefly and properly.
+-- REGARDING GitHub pull requests.
+   - DO NOT push unless I approve
+   - EACH feature requires its own PR
+   - If I am giving you an issue to fix, CREATE AN ISSUE
+   - If I am giving you a feature to create, create an PR
+   - IF MANY ISSUES STACK TOWARD THE SAME TOPIC, WHEN THE ISSUES ARE FIXED, MERGE THE ISSUES INTO ONE PR
+-- WORK on one feature/fix at a time. YOU CAN ONLY MOVE ON ONCE I APPROVE OF THE FEATURE/FIX
+-- IF AN ISSUE IS ALREADY CREATED FOR THE ISSUE YOURE BEING TOLD, APPEND TO THAT ISSUE
+-- Once you fix something in [fixes](FIXES.md) and I approve, mark it as fixed. Once all issues are fixed, wipe out the file as there is no fixes needed.
+-- ALWAYS TRY NOT TO EXCLUDE FIXES FILE OUT OF COMMITS, AS SOMETIMES I SEE YOU ARE ACCIDENTALLY DELETING IT BECAUSE ITS NOT COMMITTED
+-- ALWAYS PROPOSE HOW TO TEST IF THE BUG IS FIXED IN RUNTIME.
+-- NEVER MAKE CONFLICTING CHANGES, IF YOU KNOW A CHANGE THAT CAN CONFLICT BETWEEN FILES, MERGE THE ISSUES TOGETHER INTO ONE PR TO PREVENT CONFLICT.
+-- ALWAYS UTILIZE BEST PRACTICES FOR GITHUB WORKFLOWS.
+-- RULES.md and FIXES.md must always exist in main in case of deletion.
