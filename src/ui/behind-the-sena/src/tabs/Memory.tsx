@@ -59,7 +59,8 @@ type ShortTermMemory = {
 type MemoryStats = {
   total_memories: number;
   memories_today: number;
-  accuracy: number;
+  /** Short-term buffer usage 0–100 (percent). */
+  context_usage: number;
 };
 
 type PersonalityStats = {
@@ -81,7 +82,12 @@ export const Memory: React.FC = () => {
   const [shortTermMemories, setShortTermMemories] = useState<ShortTermMemory[]>(
     [],
   );
-  const [stats, setStats] = useState<MemoryStats | null>(null);
+  // Start with zeros so the StatCards render immediately on mount.
+  const [stats, setStats] = useState<MemoryStats>({
+    total_memories: 0,
+    memories_today: 0,
+    context_usage: 0,
+  });
   const [loading, setLoading] = useState(true);
   const [shortTermLoading, setShortTermLoading] = useState(false);
 
@@ -308,9 +314,46 @@ export const Memory: React.FC = () => {
   const fetchStats = useCallback(async () => {
     try {
       const data = await fetchJson<any>("/api/v1/memory/stats");
-      setStats(data.memory ?? data);
+
+      // Response shape from /api/v1/memory/stats:
+      // {
+      //   status: "success",
+      //   memory: {
+      //     long_term:  { total_memories: N, recent: [{id,content,created_at}] },
+      //     short_term: { total_items: N, usage_percent: N },
+      //     ...
+      //   },
+      //   retrieval: { ... }
+      // }
+      const memory = data?.memory ?? data?.data ?? data ?? {};
+      const longTerm = memory?.long_term ?? {};
+      const shortTerm = memory?.short_term ?? {};
+
+      // Total long-term memories stored.
+      const total =
+        Number(longTerm?.total_memories ?? memory?.total_memories ?? 0) || 0;
+
+      // Count how many recent memories were created today.
+      // The backend returns up to 5 recent items; this is an approximation
+      // (correct when ≤ 5 memories were added today).
+      const todayPrefix = new Date().toISOString().slice(0, 10); // "YYYY-MM-DD"
+      const recentList: Array<{ created_at?: string }> = longTerm?.recent ?? [];
+      const today = recentList.filter((m) =>
+        m.created_at?.startsWith(todayPrefix),
+      ).length;
+
+      // Short-term buffer usage as a 0–100 percentage.
+      const contextUsage = Number(shortTerm?.usage_percent ?? 0) || 0;
+
+      setStats({
+        total_memories: total,
+        memories_today: today,
+        context_usage: Math.round(contextUsage),
+      });
     } catch (e) {
       console.error("Failed to fetch stats:", e);
+      // Keep the zero defaults already in state — do not null-out the stats
+      // because that would hide the StatCards entirely.
     } finally {
       setLoading(false);
     }
@@ -444,34 +487,34 @@ export const Memory: React.FC = () => {
     <TabLayout>
       {/* Stats header */}
       <div className="px-6 pt-6 pb-4 space-y-4">
-        {stats && (
-          <div className="grid grid-cols-3 gap-3">
-            <StatCard
-              label="Total Memories"
-              value={stats.total_memories}
-              icon={Brain}
-              color="text-purple-400"
-              bg="bg-purple-500/10"
-              delay={0.05}
-            />
-            <StatCard
-              label="Today"
-              value={stats.memories_today}
-              icon={Calendar}
-              color="text-blue-400"
-              bg="bg-blue-500/10"
-              delay={0.1}
-            />
-            <StatCard
-              label="Accuracy"
-              value={`${Math.round((stats.accuracy ?? 0) * 100)}%`}
-              icon={TrendingUp}
-              color="text-emerald-400"
-              bg="bg-emerald-500/10"
-              delay={0.15}
-            />
-          </div>
-        )}
+        <div className="grid grid-cols-3 gap-3">
+          <StatCard
+            label="Total Memories"
+            value={stats.total_memories}
+            icon={Brain}
+            color="text-purple-400"
+            bg="bg-purple-500/10"
+            delay={0.05}
+          />
+          <StatCard
+            label="Added Today"
+            value={stats.memories_today}
+            icon={Calendar}
+            color="text-blue-400"
+            bg="bg-blue-500/10"
+            delay={0.1}
+            subLabel="from recent 5"
+          />
+          <StatCard
+            label="Context Usage"
+            value={`${stats.context_usage}%`}
+            icon={TrendingUp}
+            color="text-emerald-400"
+            bg="bg-emerald-500/10"
+            delay={0.15}
+            subLabel="short-term buffer"
+          />
+        </div>
 
         {/* Section tabs */}
         <div className="flex items-center gap-2 flex-wrap">
