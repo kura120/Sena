@@ -327,7 +327,16 @@ function createLoaderWindow() {
     frame: false,
     thickFrame: false,
     transparent: true,
-    backgroundColor: "#00000000",
+    // Use the darkest colour from the loader card's gradient as the solid base.
+    // A zero-alpha backgroundColor (#00000000) tells DWM the surface has no
+    // alpha before Chromium's first paint, so the window is never composited
+    // correctly and the Chromium compositor's default grey bleeds through the
+    // rounded corner pixels (which are outside the CSS-painted area).
+    // A solid dark colour forces DWM to composite the window from frame 0.
+    // setBackgroundColor('#00000000') is called after construction to override
+    // only the Chromium renderer's background; those corner pixels then carry
+    // alpha=0 in the final frame and are fully transparent to the desktop.
+    backgroundColor: "#020712",
     // Explicitly disable Windows 11 Mica/Acrylic background material.
     // Without this, DWM applies a semi-transparent gray/frosted effect to the
     // entire window surface on Windows 11, which appears as a gray frame around
@@ -352,6 +361,14 @@ function createLoaderWindow() {
   });
 
   keepOnTop(loaderWindow);
+
+  // Override the Chromium renderer's background to fully transparent so the
+  // rounded corner pixels (which CSS border-radius leaves unpainted) carry
+  // alpha=0 in the composited frame — click-through and see-through to the
+  // desktop.  The OS-level window colour set by the constructor ("#020712")
+  // is unaffected by this call, so DWM continues to composite correctly.
+  loaderWindow.setBackgroundColor("#00000000");
+
   loaderWindow.once("ready-to-show", () => {
     applyWindowIcon(loaderWindow);
     loaderWindow.show();
@@ -392,7 +409,16 @@ function createSetupWindow() {
     frame: false,
     thickFrame: false,
     transparent: true,
-    backgroundColor: "#00000000",
+    // Same two-step pattern as the loader and dashboard windows: solid colour
+    // for DWM compositing, then setBackgroundColor('#00000000') below to make
+    // the Chromium renderer background transparent so any CSS-unpainted pixels
+    // (e.g. rounded corner cutouts) carry alpha=0 rather than showing grey.
+    // "#060D20" matches the setup window title-bar background (bg-[#060d20]).
+    backgroundColor: "#060D20",
+    // Disable Windows 11 Mica/Acrylic and drop-shadow on this transparent
+    // window for the same reasons as the loader and dashboard windows.
+    backgroundMaterial: "none",
+    hasShadow: false,
     resizable: true,
     minWidth: 560,
     minHeight: 520,
@@ -413,6 +439,11 @@ function createSetupWindow() {
   });
 
   keepOnTop(setupWindow);
+
+  // Override the Chromium renderer's background to fully transparent so any
+  // CSS-unpainted pixels carry alpha=0 in the composited frame.  The
+  // OS-level window colour ("#060D20") set by the constructor is unaffected.
+  setupWindow.setBackgroundColor("#00000000");
 
   setupWindow.once("ready-to-show", () => {
     setupWindow.show();
@@ -454,7 +485,24 @@ function createDashboardWindow() {
     frame: false,
     thickFrame: false,
     transparent: true,
-    backgroundColor: "#00000000",
+    // Use a solid base colour instead of fully-transparent #00000000.
+    // On Windows, a zero-alpha backgroundColor tells DWM the entire surface
+    // has no alpha before Chromium finishes its first paint, so the window
+    // never gets composited and appears as a gray rectangle (or not at all).
+    // A solid base colour matching the hotbar card forces DWM to composite
+    // the window correctly from the very first frame. Because the window is
+    // hidden until ready-to-show, users never see this fallback colour.
+    // setBackgroundColor('#00000000') is called after construction (below) to
+    // override only the Chromium renderer's base layer, so CSS-unpainted pixels
+    // (the transparent area above the hotbar card) carry alpha=0 and are
+    // click-through + see-through to the desktop.
+    backgroundColor: "#0F172A",
+    // Explicitly disable Windows 11 Mica/Acrylic background material.
+    // Without this, DWM applies a semi-transparent gray/frosted effect to the
+    // entire window surface on Windows 11, which appears as a gray rectangle
+    // around the hotbar card even though the React content is bg-transparent.
+    backgroundMaterial: "none",
+    hasShadow: false,
     resizable: false,
     alwaysOnTop: true,
     focusable: true,
@@ -473,6 +521,7 @@ function createDashboardWindow() {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      backgroundThrottling: false,
       preload: path.join(__dirname, "preload.js"),
     },
   });
@@ -480,6 +529,23 @@ function createDashboardWindow() {
   dashboardWindow.setMenuBarVisibility(false);
   dashboardWindow.setAutoHideMenuBar(true);
   keepOnTop(dashboardWindow);
+
+  // Decouple DWM compositing colour from the Chromium renderer background.
+  // The BrowserWindow constructor uses backgroundColor "#0F172A" (solid) so
+  // DWM composites the window correctly from frame 0 — a zero-alpha
+  // backgroundColor causes DWM to treat the surface as invisible before
+  // Chromium's first paint, which produces the gray-rectangle artefact.
+  // However that same solid colour would bleed through any CSS-unpainted
+  // pixel (the transparent area above the hotbar card), giving it a dark
+  // tint and — critically — non-zero alpha, which makes Windows route mouse
+  // events to the window instead of passing them through to what is beneath.
+  // webContents.setBackgroundColor overrides only the Chromium renderer's
+  // base layer; DWM's record of the window colour is unaffected.  After
+  // this call, every pixel that CSS does not explicitly paint will carry
+  // alpha=0 in the final composited frame → truly click-through and
+  // transparent to the desktop, while the hotbar card (bg-slate-900/90)
+  // renders at its intended 90 % opacity.
+  dashboardWindow.setBackgroundColor("#00000000");
 
   dashboardWindow.once("ready-to-show", () => {
     applyWindowIcon(dashboardWindow);
