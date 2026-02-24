@@ -87,6 +87,27 @@ class ModelRegistry:
         if ModelType.FAST in self._models:
             await self.switch_to(ModelType.FAST)
 
+        # Eagerly warm the router model so the first classify() call is not
+        # delayed by a full Ollama load. If it shares a name with the fast
+        # model the slot is already hot — just mark it loaded to skip the
+        # duplicate warm-up round-trip.
+        if ModelType.ROUTER in self._models:
+            router_info = self._models[ModelType.ROUTER]
+            fast_info = self._models.get(ModelType.FAST)
+            if fast_info and router_info.config.name == fast_info.config.name:
+                router_info.client._is_loaded = True
+                logger.info(
+                    f"Router model shares name with fast model "
+                    f"({router_info.config.name}) — skipping duplicate warm-up."
+                )
+            else:
+                try:
+                    logger.info("Pre-loading router model at startup...")
+                    await router_info.client.load()
+                    logger.info("Router model pre-loaded successfully.")
+                except Exception as e:
+                    logger.warning(f"Router model pre-load failed (non-fatal): {e}")
+
         logger.info(f"Model registry initialized with {len(self._models)} models")
 
     async def register_model(
