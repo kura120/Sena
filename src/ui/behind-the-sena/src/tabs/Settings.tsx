@@ -8,6 +8,7 @@ import {
   BarChart2,
   Plug,
   Globe,
+  Sparkles,
   type LucideIcon,
 } from "lucide-react";
 import { fetchJson } from "../utils/api";
@@ -28,6 +29,10 @@ import {
   type TelemetrySettings,
 } from "../components/forms/TelemetrySettingsForm";
 import { ExtensionSettingsForm } from "../components/forms/ExtensionSettingsForm";
+import {
+  PersonalitySettingsForm,
+  type PersonalitySettings,
+} from "../components/forms/PersonalitySettingsForm";
 import { ToggleSwitch } from "../components/ToggleSwitch";
 import { SectionHeader } from "../components/SectionHeader";
 
@@ -63,6 +68,16 @@ type MemorySettingsResponse = {
       dynamic_threshold?: number;
       max_results?: number;
       reranking?: boolean;
+    };
+    personality?: {
+      inferential_learning_enabled?: boolean;
+      inferential_learning_requires_approval?: boolean;
+      auto_approve_enabled?: boolean;
+      auto_approve_threshold?: number;
+      learning_mode?: string;
+      personality_token_budget?: number;
+      max_fragments_in_prompt?: number;
+      compress_threshold?: number;
     };
   };
 };
@@ -109,6 +124,7 @@ const SECTIONS: Section[] = [
   { id: "general", label: "General", icon: SettingsIcon },
   { id: "models", label: "Models", icon: Brain },
   { id: "memory", label: "Memory", icon: Database },
+  { id: "personality", label: "Personality", icon: Sparkles },
   { id: "logging", label: "Logging", icon: ScrollText },
   { id: "telemetry", label: "Telemetry", icon: BarChart2 },
   { id: "extensions", label: "Extensions", icon: Plug },
@@ -140,6 +156,8 @@ export const Settings: React.FC = () => {
     useState<LoggingSettings | null>(null);
   const [telemetrySettings, setTelemetrySettings] =
     useState<TelemetrySettings | null>(null);
+  const [personalitySettings, setPersonalitySettings] =
+    useState<PersonalitySettings | null>(null);
 
   // ---- nav state ----
   const [activeSection, setActiveSection] = useState<string>("general");
@@ -168,6 +186,9 @@ export const Settings: React.FC = () => {
   }, []);
   useEffect(() => {
     void loadUISettings();
+  }, []);
+  useEffect(() => {
+    void loadPersonalitySettings();
   }, []);
 
   // ---- hotkey ----
@@ -228,6 +249,29 @@ export const Settings: React.FC = () => {
       });
     } catch (err) {
       console.error("Failed to load memory settings:", err);
+    }
+  };
+
+  // ---- Personality ----
+  const loadPersonalitySettings = async () => {
+    try {
+      const data = await fetchJson<MemorySettingsResponse>(
+        "/api/v1/settings/memory",
+      );
+      const p = data.data?.personality;
+      setPersonalitySettings({
+        inferential_learning_enabled: p?.inferential_learning_enabled ?? true,
+        inferential_learning_requires_approval:
+          p?.inferential_learning_requires_approval ?? true,
+        auto_approve_enabled: p?.auto_approve_enabled ?? false,
+        auto_approve_threshold: p?.auto_approve_threshold ?? 0.85,
+        learning_mode: p?.learning_mode ?? "moderate",
+        personality_token_budget: p?.personality_token_budget ?? 512,
+        max_fragments_in_prompt: p?.max_fragments_in_prompt ?? 10,
+        compress_threshold: p?.compress_threshold ?? 20,
+      });
+    } catch (err) {
+      console.error("Failed to load personality settings:", err);
     }
   };
 
@@ -505,6 +549,22 @@ export const Settings: React.FC = () => {
             value={memorySettings}
             onChange={setMemorySettings}
             onSaved={loadMemorySettings}
+          />
+        </section>
+
+        {/* ================================================================
+            PERSONALITY
+        ================================================================ */}
+        <section
+          ref={registerSectionRef("personality")}
+          id="personality"
+          className="space-y-4"
+        >
+          <SectionHeader icon={Sparkles} label="Personality" />
+          <PersonalitySettingsForm
+            value={personalitySettings}
+            onChange={setPersonalitySettings}
+            onSaved={loadPersonalitySettings}
           />
         </section>
 

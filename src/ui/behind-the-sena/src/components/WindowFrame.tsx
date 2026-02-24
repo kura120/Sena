@@ -4,10 +4,145 @@ import {
   X,
   Minimize,
   Maximize2,
+  Minimize2,
   Pin,
   PinOff,
   LucideIcon,
 } from "lucide-react";
+
+// ── Resize handles ────────────────────────────────────────────────────────────
+
+type ResizeDir = "n" | "ne" | "e" | "se" | "s" | "sw" | "w" | "nw";
+
+const CURSOR: Record<ResizeDir, string> = {
+  n: "n-resize",
+  ne: "ne-resize",
+  e: "e-resize",
+  se: "se-resize",
+  s: "s-resize",
+  sw: "sw-resize",
+  w: "w-resize",
+  nw: "nw-resize",
+};
+
+/** Invisible hit-area size in px. Large enough to be easy to grab. */
+const HIT = 6;
+
+function ResizeHandles() {
+  const onPointerDown = (dir: ResizeDir) => (e: React.PointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    // Tell main process to start polling screen.getCursorScreenPoint().
+    // All resize math happens there, so it works even when the mouse
+    // leaves the window boundary.
+    window.sena.startResize(dir);
+
+    const onUp = () => {
+      window.sena.stopResize();
+      document.removeEventListener("pointerup", onUp);
+    };
+    document.addEventListener("pointerup", onUp);
+  };
+
+  // Shared base style — transparent, on top of everything
+  const base: React.CSSProperties = { position: "fixed", zIndex: 9999 };
+
+  return (
+    <>
+      {/* ── Edges ── */}
+      <div
+        style={{
+          ...base,
+          top: 0,
+          left: HIT,
+          right: HIT,
+          height: HIT,
+          cursor: CURSOR.n,
+        }}
+        onPointerDown={onPointerDown("n")}
+      />
+      <div
+        style={{
+          ...base,
+          bottom: 0,
+          left: HIT,
+          right: HIT,
+          height: HIT,
+          cursor: CURSOR.s,
+        }}
+        onPointerDown={onPointerDown("s")}
+      />
+      <div
+        style={{
+          ...base,
+          left: 0,
+          top: HIT,
+          bottom: HIT,
+          width: HIT,
+          cursor: CURSOR.w,
+        }}
+        onPointerDown={onPointerDown("w")}
+      />
+      <div
+        style={{
+          ...base,
+          right: 0,
+          top: HIT,
+          bottom: HIT,
+          width: HIT,
+          cursor: CURSOR.e,
+        }}
+        onPointerDown={onPointerDown("e")}
+      />
+      {/* ── Corners ── */}
+      <div
+        style={{
+          ...base,
+          top: 0,
+          left: 0,
+          width: HIT,
+          height: HIT,
+          cursor: CURSOR.nw,
+        }}
+        onPointerDown={onPointerDown("nw")}
+      />
+      <div
+        style={{
+          ...base,
+          top: 0,
+          right: 0,
+          width: HIT,
+          height: HIT,
+          cursor: CURSOR.ne,
+        }}
+        onPointerDown={onPointerDown("ne")}
+      />
+      <div
+        style={{
+          ...base,
+          bottom: 0,
+          left: 0,
+          width: HIT,
+          height: HIT,
+          cursor: CURSOR.sw,
+        }}
+        onPointerDown={onPointerDown("sw")}
+      />
+      <div
+        style={{
+          ...base,
+          bottom: 0,
+          right: 0,
+          width: HIT,
+          height: HIT,
+          cursor: CURSOR.se,
+        }}
+        onPointerDown={onPointerDown("se")}
+      />
+    </>
+  );
+}
 
 export interface WindowFrameProps {
   title: string;
@@ -29,12 +164,13 @@ export function WindowFrame({
   icon: Icon,
   onClose,
   showMinimize = true,
-  showMaximize = false,
+  showMaximize = true,
   showPin = true,
   defaultPinned = true,
   variant = "tab",
 }: WindowFrameProps) {
   const [isPinned, setIsPinned] = useState(defaultPinned);
+  const [isExpanded, setIsExpanded] = useState(false);
 
   const containerClasses = useMemo(() => {
     if (variant === "floating") {
@@ -64,6 +200,7 @@ export function WindowFrame({
 
   const handleMaximize = async () => {
     await window.sena.maximizeWindow();
+    setIsExpanded((prev) => !prev);
   };
 
   const handleTogglePin = async () => {
@@ -99,9 +236,13 @@ export function WindowFrame({
             <button
               onClick={handleMaximize}
               className="w-7 h-7 rounded-md flex items-center justify-center hover:bg-slate-700/30 transition-colors"
-              title="Maximize"
+              title={isExpanded ? "Restore" : "Expand"}
             >
-              <Maximize2 className="w-3.5 h-3.5 text-slate-400 hover:text-slate-300" />
+              {isExpanded ? (
+                <Minimize2 className="w-3.5 h-3.5 text-slate-400 hover:text-slate-300" />
+              ) : (
+                <Maximize2 className="w-3.5 h-3.5 text-slate-400 hover:text-slate-300" />
+              )}
             </button>
           )}
 
@@ -132,6 +273,8 @@ export function WindowFrame({
       </motion.div>
 
       <div className="flex-1 overflow-hidden">{children}</div>
+
+      <ResizeHandles />
     </div>
   );
 }

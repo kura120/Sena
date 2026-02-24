@@ -18,6 +18,8 @@ export interface SenaAPI {
   getHotkey: () => Promise<string>;
   setHotkey: (key: string) => Promise<void>;
   setWindowPinned: (pinned: boolean) => Promise<void>;
+  startResize: (dir: string) => void;
+  stopResize: () => void;
   removeListener: (channel: string) => void;
 }
 

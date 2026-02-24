@@ -13,6 +13,11 @@ contextBridge.exposeInMainWorld("sena", {
   minimizeWindow: () => ipcRenderer.invoke("minimize-window"),
 
   maximizeWindow: () => ipcRenderer.invoke("maximize-window"),
+
+  startResize: (dir: string) => ipcRenderer.send("start-resize", dir),
+
+  stopResize: () => ipcRenderer.send("stop-resize"),
+
   setWindowPinned: (pinned: boolean) =>
     ipcRenderer.invoke("set-window-pinned", pinned),
 

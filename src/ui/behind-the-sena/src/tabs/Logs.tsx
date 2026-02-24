@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { RefreshCw, Filter } from "lucide-react";
+import { RefreshCw, Filter, ChevronRight, ChevronDown } from "lucide-react";
 import { fetchJson } from "../utils/api";
 import { TabLayout } from "../components/TabLayout";
 
@@ -35,6 +35,8 @@ export const Logs: React.FC = () => {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "error">(
     "idle",
   );
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+
   const userSelectedRef = useRef(false);
   const selectedSnapshotRef = useRef<LogEntry | null>(null);
 
@@ -218,7 +220,11 @@ export const Logs: React.FC = () => {
       setLogs(logList);
 
       const selectedStillExists = selectedId
-        ? logList.some((entry) => entry.id === selectedId)
+        ? logList.some(
+            (entry) =>
+              entry.id === selectedId ||
+              entry.children?.some((c) => c.id === selectedId),
+          )
         : false;
 
       if (
@@ -235,8 +241,13 @@ export const Logs: React.FC = () => {
     }
   }
 
+  // Search top-level entries first, then children of grouped entries
   const selectedLog =
-    logs.find((log) => log.id === selectedId) || selectedSnapshotRef.current;
+    logs.find((log) => log.id === selectedId) ||
+    logs
+      .flatMap((log) => log.children ?? [])
+      .find((c) => c.id === selectedId) ||
+    selectedSnapshotRef.current;
 
   const levelDot = {
     debug: "bg-slate-500",
@@ -271,6 +282,7 @@ export const Logs: React.FC = () => {
 
   const getMessageText = (value: string) => tryParseJson(value) || value;
   const isJsonMessage = (value: string) => Boolean(tryParseJson(value));
+
   const getDetailMessage = (entry: LogEntry) => {
     if (
       entry.kind === "chat" &&
@@ -303,6 +315,24 @@ export const Logs: React.FC = () => {
       setCopyState("error");
       setTimeout(() => setCopyState("idle"), 2000);
     }
+  };
+
+  const toggleExpand = (id: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const selectEntry = (entry: LogEntry) => {
+    userSelectedRef.current = true;
+    setSelectedId(entry.id);
+    selectedSnapshotRef.current = entry;
   };
 
   return (
@@ -363,6 +393,7 @@ export const Logs: React.FC = () => {
       {/* Scrollable logs container */}
       <div className="flex-1 min-h-0 px-4 pb-4">
         <div className="h-full grid grid-cols-1 lg:grid-cols-[1.1fr_1fr] gap-4">
+          {/* ── Left panel: log list ── */}
           <div className="bg-slate-900 rounded-lg border border-slate-800 overflow-hidden flex flex-col">
             <div className="px-3 py-2 text-[11px] text-slate-400 border-b border-slate-800/70">
               Showing latest {logs.length} entries
@@ -375,48 +406,130 @@ export const Logs: React.FC = () => {
               ) : (
                 <div className="divide-y divide-slate-800/70">
                   {logs.map((msg) => {
+                    const isGrouped = (msg.children?.length ?? 0) > 0;
+                    const isExpanded = expandedIds.has(msg.id);
                     const isSelected = msg.id === selectedId;
+
                     return (
-                      <button
-                        key={msg.id}
-                        onClick={() => {
-                          userSelectedRef.current = true;
-                          setSelectedId(msg.id);
-                          selectedSnapshotRef.current = msg;
-                        }}
-                        className={`w-full text-left px-3 py-2 transition-colors ${
-                          isSelected
-                            ? "bg-slate-800/70"
-                            : "hover:bg-slate-800/40"
-                        }`}
-                      >
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={`w-2 h-2 rounded-full ${levelDot[msg.level]}`}
-                          />
-                          <span className="text-[11px] text-slate-400 font-mono flex-shrink-0">
-                            {msg.timestamp}
-                          </span>
-                          <span
-                            className={`text-[10px] uppercase tracking-widest px-1.5 py-0.5 rounded border ${
-                              levelBadge[msg.level]
-                            }`}
-                          >
-                            {msg.level}
-                          </span>
-                          {msg.event && (
-                            <span className="text-[10px] uppercase tracking-widest text-purple-300/80">
-                              {msg.event}
-                            </span>
-                          )}
-                          <span className="text-[11px] text-slate-500 truncate">
-                            {msg.source}
-                          </span>
+                      <React.Fragment key={msg.id}>
+                        {/* ── Parent / single row ── */}
+                        <div
+                          className={`transition-colors ${
+                            isSelected && !isGrouped ? "bg-slate-800/70" : ""
+                          }`}
+                        >
+                          <div className="flex items-stretch">
+                            {/* Expand chevron — only for grouped entries */}
+                            {isGrouped ? (
+                              <button
+                                onClick={() => toggleExpand(msg.id)}
+                                className="flex items-center justify-center w-7 flex-shrink-0 text-slate-500 hover:text-slate-200 transition-colors"
+                                title={isExpanded ? "Collapse" : "Expand"}
+                              >
+                                {isExpanded ? (
+                                  <ChevronDown className="w-3.5 h-3.5" />
+                                ) : (
+                                  <ChevronRight className="w-3.5 h-3.5" />
+                                )}
+                              </button>
+                            ) : (
+                              /* Spacer to keep alignment consistent */
+                              <span className="w-7 flex-shrink-0" />
+                            )}
+
+                            {/* Row content — click to select */}
+                            <button
+                              onClick={() => selectEntry(msg)}
+                              className={`flex-1 min-w-0 text-left py-2 pr-3 transition-colors ${
+                                isSelected
+                                  ? "bg-slate-800/70"
+                                  : "hover:bg-slate-800/40"
+                              }`}
+                            >
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span
+                                  className={`w-2 h-2 rounded-full flex-shrink-0 ${levelDot[msg.level]}`}
+                                />
+                                <span className="text-[11px] text-slate-400 font-mono flex-shrink-0">
+                                  {msg.timestamp}
+                                </span>
+                                <span
+                                  className={`text-[10px] uppercase tracking-widest px-1.5 py-0.5 rounded border flex-shrink-0 ${
+                                    levelBadge[msg.level]
+                                  }`}
+                                >
+                                  {msg.level}
+                                </span>
+                                {msg.event && (
+                                  <span className="text-[10px] uppercase tracking-widest text-purple-300/80 flex-shrink-0">
+                                    {msg.event}
+                                  </span>
+                                )}
+                                <span className="text-[11px] text-slate-500 truncate">
+                                  {msg.source}
+                                </span>
+                                {/* Child count badge */}
+                                {isGrouped && (
+                                  <span className="ml-auto text-[10px] font-mono text-slate-500 bg-slate-800 border border-slate-700 px-1.5 py-0.5 rounded flex-shrink-0">
+                                    {msg.children!.length}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="mt-1 text-xs text-slate-200 font-mono break-words">
+                                {truncate(msg.message)}
+                              </div>
+                            </button>
+                          </div>
                         </div>
-                        <div className="mt-1 text-xs text-slate-200 font-mono break-words">
-                          {truncate(msg.message)}
-                        </div>
-                      </button>
+
+                        {/* ── Children (rendered inline when expanded) ── */}
+                        {isGrouped && isExpanded && (
+                          <div className="border-l-2 border-slate-700/60 ml-7">
+                            {msg.children!.map((child, idx) => {
+                              const childIsSelected = child.id === selectedId;
+                              const isLast = idx === msg.children!.length - 1;
+                              return (
+                                <button
+                                  key={child.id}
+                                  onClick={() => selectEntry(child)}
+                                  className={`w-full text-left py-1.5 pr-3 pl-3 transition-colors ${
+                                    childIsSelected
+                                      ? "bg-slate-800/60 border-l-2 border-purple-500/60 -ml-0.5"
+                                      : "hover:bg-slate-800/30"
+                                  } ${!isLast ? "border-b border-slate-800/40" : ""}`}
+                                >
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span
+                                      className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${levelDot[child.level]}`}
+                                    />
+                                    <span className="text-[10px] text-slate-500 font-mono flex-shrink-0">
+                                      {child.timestamp}
+                                    </span>
+                                    <span
+                                      className={`text-[10px] uppercase tracking-widest px-1 py-0.5 rounded border flex-shrink-0 ${
+                                        levelBadge[child.level]
+                                      }`}
+                                    >
+                                      {child.level}
+                                    </span>
+                                    {child.event && (
+                                      <span className="text-[10px] uppercase tracking-widest text-purple-300/70 flex-shrink-0">
+                                        {child.event}
+                                      </span>
+                                    )}
+                                    <span className="text-[10px] text-slate-600 truncate">
+                                      {child.source}
+                                    </span>
+                                  </div>
+                                  <div className="mt-0.5 text-[11px] text-slate-300 font-mono break-words">
+                                    {truncate(child.message, 120)}
+                                  </div>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </React.Fragment>
                     );
                   })}
                 </div>
@@ -424,6 +537,7 @@ export const Logs: React.FC = () => {
             </div>
           </div>
 
+          {/* ── Right panel: log details ── */}
           <div className="bg-slate-900 rounded-lg border border-slate-800 overflow-hidden flex flex-col">
             <div className="px-3 py-2 text-[11px] text-slate-400 border-b border-slate-800/70">
               Log details
@@ -457,6 +571,14 @@ export const Logs: React.FC = () => {
                     <span className="text-xs text-slate-500">
                       {selectedLog.source}
                     </span>
+                    {/* If this is a grouped parent, show child count */}
+                    {selectedLog.kind === "chat" &&
+                      selectedLog.children &&
+                      selectedLog.children.length > 0 && (
+                        <span className="ml-auto text-[10px] font-mono text-slate-500 bg-slate-800 border border-slate-700 px-1.5 py-0.5 rounded">
+                          {selectedLog.children.length} sub-entries
+                        </span>
+                      )}
                   </div>
 
                   <div>
@@ -497,30 +619,38 @@ export const Logs: React.FC = () => {
                     </div>
                   </div>
 
-                  {selectedLog.kind === "chat" && selectedLog.metadata && (
+                  {/* Chat timeline — shown when the grouped parent is selected */}
+                  {selectedLog.kind === "chat" && selectedLog.children && (
                     <div>
-                      <p className="text-xs text-slate-400 uppercase tracking-widest">
-                        Chat timeline
+                      <p className="text-xs text-slate-400 uppercase tracking-widest mb-2">
+                        Timeline
                       </p>
-                      <div className="mt-2 rounded-md bg-slate-950/70 border border-slate-800/70 px-3 py-2 text-[11px] text-slate-200">
-                        <div className="space-y-2">
-                          {selectedLog.children?.map((entry) => (
-                            <div
-                              key={entry.id}
-                              className="flex items-start gap-2"
+                      <div className="rounded-md bg-slate-950/70 border border-slate-800/70 overflow-hidden">
+                        {selectedLog.children.map((entry, idx) => (
+                          <div
+                            key={entry.id}
+                            className={`flex items-start gap-3 px-3 py-2 text-[11px] ${
+                              idx !== selectedLog.children!.length - 1
+                                ? "border-b border-slate-800/50"
+                                : ""
+                            }`}
+                          >
+                            <span
+                              className={`mt-0.5 w-1.5 h-1.5 rounded-full flex-shrink-0 ${levelDot[entry.level]}`}
+                            />
+                            <span className="text-slate-500 font-mono flex-shrink-0">
+                              {entry.timestamp}
+                            </span>
+                            <span
+                              className={`text-[10px] uppercase tracking-widest px-1 py-0.5 rounded border flex-shrink-0 ${levelBadge[entry.level]}`}
                             >
-                              <span className="text-slate-500 font-mono">
-                                {entry.timestamp}
-                              </span>
-                              <span className="text-slate-400">
-                                {entry.level.toUpperCase()}
-                              </span>
-                              <span className="text-slate-100 font-mono break-words">
-                                {entry.message}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
+                              {entry.level}
+                            </span>
+                            <span className="text-slate-200 font-mono break-words min-w-0">
+                              {entry.message}
+                            </span>
+                          </div>
+                        ))}
                       </div>
                     </div>
                   )}

@@ -15,6 +15,25 @@ import { parse as parseYaml } from "yaml";
 const windows = new Map<string, BrowserWindow>();
 const floatingOrder: string[] = [];
 const floatingMoved = new Set<string>();
+const windowPreExpandBounds = new Map<number, Electron.Rectangle>();
+
+interface ResizeSession {
+  win: BrowserWindow;
+  dir: string;
+  startCursor: { x: number; y: number };
+  startBounds: Electron.Rectangle;
+  minW: number;
+  minH: number;
+  intervalId: ReturnType<typeof setInterval>;
+}
+let activeResize: ResizeSession | null = null;
+
+function stopActiveResize() {
+  if (activeResize) {
+    clearInterval(activeResize.intervalId);
+    activeResize = null;
+  }
+}
 
 /**
  * Re-assert always-on-top on every blur so Windows 11 cannot lower the
@@ -416,6 +435,8 @@ function createFloatingWindow(feature: string, title: string) {
   const floatingWindow = new BrowserWindow({
     width: 700,
     height: 550,
+    minWidth: 550,
+    minHeight: 420,
     frame: false,
     thickFrame: false,
     transparent: true,
@@ -461,6 +482,7 @@ function createFloatingWindow(feature: string, title: string) {
   floatingWindow.on("closed", () => {
     windows.delete(feature);
     floatingMoved.delete(feature);
+    windowPreExpandBounds.delete(floatingWindow.id);
     const index = floatingOrder.indexOf(feature);
     if (index >= 0) {
       floatingOrder.splice(index, 1);
@@ -668,13 +690,75 @@ ipcMain.handle("minimize-window", (event) => {
   window?.minimize();
 });
 
-// Maximize/restore window
+// Start a resize session — main process polls global cursor position every
+// 16 ms so resize works even when the mouse leaves the window boundary.
+ipcMain.on("start-resize", (event, dir: string) => {
+  stopActiveResize();
+
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win) return;
+
+  const startCursor = screen.getCursorScreenPoint();
+  const startBounds = win.getBounds();
+  const [minW, minH] = win.getMinimumSize();
+
+  const intervalId = setInterval(() => {
+    if (!activeResize) return;
+    const cursor = screen.getCursorScreenPoint();
+    const dx = cursor.x - startCursor.x;
+    const dy = cursor.y - startCursor.y;
+
+    let { x, y, width, height } = startBounds;
+
+    if (dir.includes("e")) width = Math.max(minW, width + dx);
+    if (dir.includes("s")) height = Math.max(minH, height + dy);
+    if (dir.includes("w")) {
+      x = x + dx;
+      width = Math.max(minW, width - dx);
+    }
+    if (dir.includes("n")) {
+      y = y + dy;
+      height = Math.max(minH, height - dy);
+    }
+
+    win.setBounds({
+      x: Math.round(x),
+      y: Math.round(y),
+      width: Math.round(width),
+      height: Math.round(height),
+    });
+  }, 16);
+
+  activeResize = { win, dir, startCursor, startBounds, minW, minH, intervalId };
+});
+
+// Stop the active resize session (sent on pointerup from renderer).
+ipcMain.on("stop-resize", () => {
+  stopActiveResize();
+});
+
+// Maximize/restore window — uses manual setBounds because transparent
+// frameless windows (thickFrame:false) silently ignore window.maximize()
+// on Windows.
 ipcMain.handle("maximize-window", (event) => {
   const window = BrowserWindow.fromWebContents(event.sender);
-  if (window?.isMaximized()) {
-    window.restore();
+  if (!window) return;
+
+  const id = window.id;
+  if (windowPreExpandBounds.has(id)) {
+    // Restore to pre-expand bounds
+    window.setBounds(windowPreExpandBounds.get(id)!);
+    windowPreExpandBounds.delete(id);
   } else {
-    window?.maximize();
+    // Save current bounds then expand to full work area
+    windowPreExpandBounds.set(id, window.getBounds());
+    const { workArea } = screen.getPrimaryDisplay();
+    window.setBounds({
+      x: workArea.x,
+      y: workArea.y,
+      width: workArea.width,
+      height: workArea.height,
+    });
   }
 });
 
