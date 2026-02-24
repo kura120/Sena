@@ -22,9 +22,8 @@ import {
 } from "lucide-react";
 import { fetchJson } from "../utils/api";
 import {
-  openWebSocket,
-  closeWebSocket,
-  sendSubscription,
+  addMessageHandler,
+  connectSharedSocket,
   WebSocketMessage,
 } from "../utils/websocket";
 
@@ -332,9 +331,9 @@ export const Chat: React.FC = () => {
   // ── WebSocket for thinking stages ─────────────────────────────────────────────
 
   useEffect(() => {
-    let socket: WebSocket | null = null;
+    void connectSharedSocket("/ws");
 
-    const handleMessage = (payload: WebSocketMessage) => {
+    const unsubscribe = addMessageHandler((payload: WebSocketMessage) => {
       if (payload.type === "processing_update") {
         const data = payload.data as
           | { stage?: string; details?: string }
@@ -358,19 +357,9 @@ export const Chat: React.FC = () => {
           ]);
         }
       }
-    };
+    });
 
-    const connect = async () => {
-      socket = await openWebSocket("/ws", {
-        onOpen: () => sendSubscription(socket!, ["processing"]),
-        onMessage: handleMessage,
-      });
-    };
-
-    void connect();
-    return () => {
-      if (socket) closeWebSocket(socket);
-    };
+    return unsubscribe;
   }, []);
 
   // ── Session operations ────────────────────────────────────────────────────────

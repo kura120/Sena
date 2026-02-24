@@ -24,9 +24,8 @@ import { EmptyState } from "../components/EmptyState";
 import { LoadingState } from "../components/LoadingState";
 import { fetchJson } from "../utils/api";
 import {
-  closeWebSocket,
-  openWebSocket,
-  sendSubscription,
+  addMessageHandler,
+  connectSharedSocket,
   WebSocketMessage,
 } from "../utils/websocket";
 
@@ -415,8 +414,6 @@ export const Memory: React.FC = () => {
   // ── WebSocket subscription ──────────────────────────────────────────────────
 
   useEffect(() => {
-    let socket: WebSocket | null = null;
-
     const handleMessage = (payload: WebSocketMessage) => {
       if (payload?.type === "memory_update") {
         const data = payload?.data as MemoryUpdateData | undefined;
@@ -437,17 +434,9 @@ export const Memory: React.FC = () => {
       }
     };
 
-    const connect = async () => {
-      socket = await openWebSocket("/ws", {
-        onOpen: () => sendSubscription(socket!, ["memory", "personality"]),
-        onMessage: handleMessage,
-      });
-    };
-
-    void connect();
-    return () => {
-      if (socket) closeWebSocket(socket);
-    };
+    void connectSharedSocket("/ws");
+    const unsubscribe = addMessageHandler(handleMessage);
+    return unsubscribe;
   }, [activeTab]);
 
   // ── Render helpers ──────────────────────────────────────────────────────────
