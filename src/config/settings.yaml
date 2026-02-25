@@ -22,11 +22,7 @@ llm:
       max_tokens: 8192
       temperature: 0.3
       context_window: 16384
-    router:
-      name: mistral:7b-instruct
-      max_tokens: 1024
-      temperature: 0.2
-      context_window: 4096
+
   ollama_keep_alive: -1
 memory:
   provider: mem0
