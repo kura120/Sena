@@ -285,6 +285,15 @@ class Sena:
                     user_input,
                 )
 
+                # Inject successful extension outputs into memory context so the
+                # LLM actually sees them. This must happen before generate().
+                successful_exts = {k: v for k, v in ctx.extension_results.items() if v.get("status") == "success"}
+                if successful_exts:
+                    ext_lines = ["Extension results:"]
+                    for name, result in successful_exts.items():
+                        ext_lines.append(f"- {name}: {result.get('output', '')}")
+                    ctx.memory_context.append(Message(role=MessageRole.SYSTEM, content="\n".join(ext_lines)))
+
             # 4. Generate response
             if stream:
                 # For streaming, we'll accumulate the response
@@ -381,6 +390,15 @@ class Sena:
                     ctx.intent_result.required_extensions,
                     user_input,
                 )
+
+                # Inject successful extension outputs into memory context so the
+                # LLM actually sees them. This must happen before stream().
+                successful_exts = {k: v for k, v in ctx.extension_results.items() if v.get("status") == "success"}
+                if successful_exts:
+                    ext_lines = ["Extension results:"]
+                    for name, result in successful_exts.items():
+                        ext_lines.append(f"- {name}: {result.get('output', '')}")
+                    ctx.memory_context.append(Message(role=MessageRole.SYSTEM, content="\n".join(ext_lines)))
 
             # 4. Stream response
             ctx.set_stage(ProcessingStage.LLM_STREAMING)
@@ -522,16 +540,6 @@ class Sena:
             except Exception as e:
                 logger.error(f"Extension '{ext_name}' execution error: {e}", exc_info=True)
                 results[ext_name] = {"error": str(e), "status": "error"}
-
-        # Inject extension results into memory context if any succeeded
-        if results:
-            successful = {k: v for k, v in results.items() if v.get("status") == "success"}
-            if successful:
-                ext_lines = ["Extension results:"]
-                for name, result in successful.items():
-                    ext_lines.append(f"- {name}: {result.get('output', '')}")
-                # This will be picked up by _retrieve_memory callers via ctx.memory_context
-                logger.debug(f"Extension results ready for context injection: {list(successful.keys())}")
 
         return results
 
