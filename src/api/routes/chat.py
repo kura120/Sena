@@ -107,8 +107,6 @@ async def chat(
             logger.warning(f"Memory context error: {mem_err}, continuing without memory", exc_info=True)
 
         # Process the message through Sena
-        logger.info("Processing message through Sena...")
-        logger.info(f"Sena initialized: {sena.is_initialized}")
         response = None
         response_content = ""
         try:
@@ -116,7 +114,7 @@ async def chat(
                 user_input=request.message,
                 stream=False,
             )
-            logger.info(f"Sena processing complete, response type: {type(response)}")
+            logger.debug(f"Sena processing complete, response type: {type(response)}")
             response_content = getattr(response, "content", None) or getattr(response, "response", "")
             logger.debug(f"Response content length: {len(response_content)}")
         except Exception as process_err:
@@ -124,7 +122,6 @@ async def chat(
             # Fallback response
             response_content = f"I encountered an error processing your request: {str(process_err)}. Please ensure Ollama is running and try again."
 
-        logger.info("Storing assistant response in memory...")
         try:
             # Add assistant response to memory
             await memory_mgr.add_to_context(
@@ -136,7 +133,6 @@ async def chat(
         except Exception as mem_err:
             logger.warning(f"Memory storage error: {mem_err}", exc_info=True)
 
-        logger.info("Extracting learnings from conversation...")
         try:
             # Extract learnings from conversation if enabled
             conversation = await memory_mgr.get_conversation_context()
@@ -152,19 +148,13 @@ async def chat(
         except Exception as learn_err:
             logger.warning(f"Learning extraction error: {learn_err}", exc_info=True)
 
-        logger.info(f"Building chat response for session {session_id}")
         if response:
-            chat_meta = {
-                "session_id": session_id,
-                "model": getattr(response, "model", "ollama"),
-                "prompt_tokens": int(getattr(response, "prompt_tokens", 0) or 0),
-                "completion_tokens": int(getattr(response, "completion_tokens", 0) or 0),
-                "total_tokens": int(getattr(response, "total_tokens", 0) or 0),
-                "duration_ms": float(getattr(response, "duration_ms", 0) or 0),
-                "message_length": len(request.message),
-                "response_length": len(response_content),
-            }
-            logger.info(f"[CHAT] {json.dumps(chat_meta, separators=(',', ':'))}")
+            model_name = getattr(response, "model", "ollama")
+            duration = float(getattr(response, "duration_ms", 0) or 0)
+            total_tokens = int(getattr(response, "total_tokens", 0) or 0)
+            logger.info(
+                f"[CHAT] {model_name} | {total_tokens} tokens | {duration:.0f}ms | {len(response_content)} chars"
+            )
         chat_response = ChatResponse(
             response=response_content,
             session_id=session_id,
@@ -177,18 +167,13 @@ async def chat(
                 extensions_used=[],
             ),
         )
-        logger.info(f"=== CHAT REQUEST COMPLETE === Response length: {len(response_content)}")
         return chat_response
 
     except HTTPException as http_exc:
         logger.error(f"HTTP exception in chat: status={http_exc.status_code}, detail={http_exc.detail}")
         raise
     except Exception as e:
-        logger.error(f"=== CHAT REQUEST FAILED ===")
-        logger.error(f"Exception type: {type(e).__name__}")
-        logger.error(f"Exception message: {str(e)}")
-        logger.error(f"Session: {session_id}")
-        logger.error(f"Full traceback:", exc_info=True)
+        logger.error(f"[CHAT] Failed — {type(e).__name__}: {e} (session={session_id})", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
 
 

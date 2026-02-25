@@ -168,7 +168,7 @@ class ModelRegistry:
             self._active_model = model_type
             self._last_switch = datetime.now()
 
-            logger.info(f"Switched to model: {model_type.value} ({model_info.config.name})")
+            logger.debug(f"Switched to model: {model_type.value} ({model_info.config.name})")
 
             return model_info.client
 
