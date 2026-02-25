@@ -38,6 +38,7 @@ from src.api.routes import (
 )
 from src.api.websocket.manager import ws_manager
 from src.config.settings import get_app_data_dir, get_settings
+from src.core.runtime import RUNTIME_ID, get_runtime_info
 from src.extensions import get_extension_manager
 from src.memory.manager import MemoryManager
 from src.utils.logger import logger, setup_logger
@@ -77,7 +78,10 @@ setup_logger(
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application lifespan handler."""
     # Startup
-    logger.info("Starting Sena API server...")
+    logger.info("=" * 60)
+    logger.info(f"Starting Sena API server...")
+    logger.info(f"Runtime ID: {RUNTIME_ID}")
+    logger.info("=" * 60)
 
     # Initialize Sena (only when LLM settings are complete)
     try:
@@ -139,6 +143,7 @@ async def log_requests(request: Request, call_next):
         # Add custom headers
         response.headers["X-Request-ID"] = request_id
         response.headers["X-Process-Time"] = f"{process_time:.2f}ms"
+        response.headers["X-Runtime-ID"] = RUNTIME_ID
 
         return response
     except Exception as e:
@@ -224,6 +229,7 @@ async def health() -> Any:
     response = {
         "status": status,
         "version": "1.0.0",
+        "runtime": get_runtime_info(),
         "components": {
             "sena": {
                 "initialized": sena.is_initialized if sena else False,
@@ -253,8 +259,7 @@ async def stats() -> dict[str, Any]:
         sena_stats = {}
 
     return {
-        "uptime_seconds": uptime,
-        "start_time": _start_time.isoformat(),
+        **get_runtime_info(),
         "websocket_connections": ws_manager.connection_count,
         "sena": sena_stats,
     }
