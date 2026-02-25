@@ -221,7 +221,7 @@ class ExtensionsConfig(BaseModel):
 class CORSConfig(BaseModel):
     """CORS configuration."""
 
-    enabled: bool = True
+    enabled: bool = False
     origins: list[str] = Field(
         default_factory=lambda: [
             "http://localhost:3000",
