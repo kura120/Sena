@@ -2,7 +2,7 @@
 
 Read this file top-to-bottom before touching any file.
 Implement items in the order listed. One PR per item unless noted.
-
+ALWAYS REFER TO [Rules](RULES.md)
 ---
 
 ## Context You Must Load First
@@ -11,12 +11,608 @@ Implement items in the order listed. One PR per item unless noted.
 |------|-----|
 | `src/ui/behind-the-sena/src/tabs/Chat.tsx` | All UI bugs live here |
 | `src/ui/behind-the-sena/src/utils/websocket.ts` | Singleton WS already implemented — just not used by Chat |
-| `src/core/sena.py` | Pipeline orchestrator — reasoning step goes here |
+| `src/core/sena.py` | Pipeline orchestrator — reasoning step, extension injection, memory unification |
 | `src/core/constants.py` | ModelType, ProcessingStage enums |
-| `src/config/settings.py` | Add reasoning_model config |
+| `src/core/bootstrapper.py` | Ollama check — must delegate to OllamaProcessManager |
+| `src/core/local_domain.py` | Already built, not wired — needs calling from server startup |
+| `src/core/elevation.py` | Already built, not wired — document intended usage |
+| `src/config/settings.py` | Add reasoning_model config, OllamaProcessConfig, fix ollama_keep_alive type, remove dead fields |
 | `src/llm/models/model_registry.py` | Register + warm reasoning model |
+| `src/llm/models/ollama_client.py` | keep_alive type already handled at runtime — verify |
+| `src/llm/router.py` | Race condition — bypasses per-model locking |
+| `src/llm/manager.py` | Caches embedding client correctly — verify it's used everywhere |
+| `src/api/server.py` | CORS wide-open — must use configured origins |
 | `src/api/websocket/manager.py` | Add llm_thinking event type |
 | `src/llm/prompts/` | Add reasoning_prompts.py |
+| `src/memory/manager.py` | mem0 blocks event loop — fix async path |
+| `src/memory/mem0_client.py` | Synchronous httpx call in async context, wrong logger — full rewrite or removal |
+
+---
+
+## ═══════════════════════════════════════════════
+## BACKEND BUGS — Fix before any feature work
+## ═══════════════════════════════════════════════
+
+---
+
+## Backend Bug 1 — Router Bypasses Per-Model Locking (Race Condition)
+
+**Status:** Open
+**Priority:** CRITICAL — breaks MAS concurrency
+**File:** `src/llm/router.py`
+
+### Symptom
+Two concurrent requests arriving when the ROUTER model is not yet loaded will both
+call `router_model.load()` simultaneously. The per-model `asyncio.Lock` in `ModelInfo`
+is completely bypassed. This is the primary reason concurrent usage of multiple models
+fails unpredictably.
+
+### Root Cause
+`_llm_classify()` uses `self._registry.get_model(ModelType.ROUTER)` which returns the raw
+`BaseLLM` client without going through `ModelInfo.ensure_loaded()`. It then calls
+`await router_model.load()` directly — skipping the double-checked locking mechanism that
+was specifically built to prevent this exact race.
+
+```python
+# CURRENT (wrong) — in router.py _llm_classify():
+router_model = self._registry.get_model(ModelType.ROUTER)
+# ...
+elif not router_model.is_loaded:
+    await router_model.load()   # ← direct call, NO per-model lock
+```
+
+### Fix
+Replace the entire model-access block in `_llm_classify()` with `get_client()`, wrapping
+the circuit-breaker logic around the call rather than around a manual `load()`:
+
+```python
+# CORRECT
+try:
+    # Circuit breaker: if the router has failed recently, skip to fast model
+    if time.monotonic() < self._router_circuit_open_until:
+        logger.debug("Router circuit open — falling back to fast model")
+        router_model = await self._registry.get_client(ModelType.FAST)
+    else:
+        try:
+            router_model = await self._registry.get_client(ModelType.ROUTER)
+            self._router_failure_count = 0  # reset on success
+        except Exception as load_err:
+            self._router_failure_count += 1
+            logger.warning(f"Router model load failed ({self._router_failure_count}): {load_err}")
+            if self._router_failure_count >= self._CIRCUIT_FAILURE_THRESHOLD:
+                self._router_circuit_open_until = time.monotonic() + self._CIRCUIT_COOLDOWN
+                logger.warning("Router circuit opened for 300s — using fast model")
+            router_model = await self._registry.get_client(ModelType.FAST)
+except Exception:
+    return self._create_result(IntentType.GENERAL_CONVERSATION, confidence=0.3)
+```
+
+`get_client()` calls `ModelInfo.ensure_loaded()` which has the per-model lock.
+Remove the old `get_model()` call and the manual `is_loaded` check entirely.
+
+---
+
+## Backend Bug 2 — Extension Results Are Never Injected Into the LLM Context
+
+**Status:** Open
+**Priority:** HIGH — extensions silently have zero effect on responses
+**File:** `src/core/sena.py`
+
+### Symptom
+Extensions execute, produce output, but that output never reaches the LLM. The model
+generates its response as if no extensions ran. No error is raised — the failure is silent.
+
+### Root Cause
+At the end of `_execute_extensions()`, `ext_lines` is built but never returned or appended
+to context. The comment `"# This will be picked up by _retrieve_memory callers"` is wrong —
+nothing picks it up:
+
+```python
+# CURRENT (wrong) — builds ext_lines then drops them
+ext_lines = ["Extension results:"]
+for name, result in successful.items():
+    ext_lines.append(f"- {name}: {result.get('output', '')}")
+# ext_lines is never returned or attached to anything
+logger.debug(f"Extension results ready for context injection: {list(successful.keys())}")
+return results   # results dict has outputs but caller never injects them into messages
+```
+
+### Fix
+`_execute_extensions()` should return the extension output string alongside the results dict,
+OR `sena.process()` / `sena.stream()` should inject `ctx.extension_results` into the message
+list after the method returns. The cleanest fix is in the caller:
+
+```python
+# In process() / stream(), after _execute_extensions() returns:
+if ctx.extension_results:
+    successful_exts = {k: v for k, v in ctx.extension_results.items() if v.get("status") == "success"}
+    if successful_exts:
+        ext_lines = ["Extension results:"]
+        for name, result in successful_exts.items():
+            ext_lines.append(f"- {name}: {result.get('output', '')}")
+        ctx.memory_context.append(
+            Message(role=MessageRole.SYSTEM, content="\n".join(ext_lines))
+        )
+```
+
+This append must happen BEFORE the `generate()` / `stream()` call, after `_execute_extensions()`.
+Also remove the dead `ext_lines` block at the end of `_execute_extensions()`.
+
+---
+
+## Backend Bug 3 — CORS Is Hardcoded Wide Open
+
+**Status:** Open
+**Priority:** HIGH — any web page can call Sena's API
+**File:** `src/api/server.py`
+
+### Symptom
+`settings.api.cors.origins` is configured with a specific whitelist in `settings.py` but
+is completely ignored. The server accepts requests from any origin.
+
+### Root Cause
+```python
+# CURRENT (wrong) — ignores settings entirely
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],   # dev shortcut never reverted
+    ...
+)
+```
+
+### Fix
+```python
+# CORRECT
+_cors = settings.api.cors
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors.origins if _cors.enabled else [],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+```
+
+---
+
+## Backend Bug 4 — mem0 Blocks the Async Event Loop on Every Health Check
+
+**Status:** Open
+**Priority:** HIGH — freezes all requests for up to 1.5 s on each /health call
+**File:** `src/memory/mem0_client.py`
+
+### Symptom
+The Electron frontend polls `/health` regularly. Every call causes a 1.5-second stall
+across ALL concurrent requests because `_ensure_local_memory()` contains a synchronous
+`httpx.get()` that blocks the event loop:
+
+```python
+# CURRENT (wrong) — synchronous blocking call inside an async context
+httpx.get(f"{self.mem0_ollama_base_url}/api/tags", timeout=1.5)
+```
+
+### Fix — Option A (preferred): Replace `httpx.get` with `asyncio.get_event_loop().run_in_executor`
+```python
+import asyncio, httpx
+loop = asyncio.get_event_loop()
+await loop.run_in_executor(
+    None,
+    lambda: httpx.get(f"{self.mem0_ollama_base_url}/api/tags", timeout=1.5)
+)
+```
+
+### Fix — Option B (better long-term): Rewrite `mem0_client.py` entirely
+The file has multiple additional issues beyond this one (see Backend Debt 3 below).
+If doing a full rewrite, this blocking call disappears naturally.
+
+---
+
+## Backend Bug 5 — Two Disconnected Memory Systems in sena.py
+
+**Status:** Open
+**Priority:** MEDIUM — causes inconsistent memory state between storage and retrieval
+**File:** `src/core/sena.py`
+
+### Symptom
+Short-term memory reads go through `self._memory_repo.short_term` (direct repository).
+Long-term memory reads go through `MemoryManager.get_instance().long_term` (singleton).
+Long-term memory writes in `_post_process()` go through `MemoryManager.get_instance()`.
+There is no single unified view of memory state.
+
+### Root Cause
+`_retrieve_memory()` splits access:
+```python
+# Short-term — direct repository
+short_term = await self._memory_repo.short_term.get_session_buffer(...)
+
+# Long-term — through MemoryManager singleton (different object)
+mem_mgr = MemoryManager.get_instance()
+long_term = await mem_mgr.long_term.search(...)
+```
+
+`_post_process()` also calls `MemoryManager.get_instance()` for storage, but the
+`MemoryManager` instance is separate from the `MemoryRepository` used for short-term reads.
+
+### Fix
+Route ALL memory operations through `MemoryManager`. Remove the dual-path pattern.
+`MemoryManager` should be the single source of truth for all memory access in `sena.py`.
+`self._memory_repo` should only be used for conversation persistence (storing the full
+turn in the `conversations` table), not for memory retrieval.
+
+---
+
+## ═══════════════════════════════════════════════
+## BACKEND DEBT — Implement in order after bugs
+## ═══════════════════════════════════════════════
+
+---
+
+## Backend Debt 1 — OllamaProcessManager Does Not Exist
+
+**Status:** Open
+**Priority:** CRITICAL — root cause of all cold-start latency
+**Files to create:** `src/llm/ollama_manager.py`
+**Files to update:** `src/core/bootstrapper.py`, `src/config/settings.py`
+
+### Context
+The instructions (`copilot-instructions.md`) document `OllamaProcessManager` in full detail
+as if it already exists. It does not. The file `src/llm/ollama_manager.py` is missing.
+`bootstrapper._check_ollama()` still manually pings `GET /api/tags` via httpx with no
+process management, no auto-start, and no concurrency verification.
+
+This is the primary reason for cold-start latency: Ollama starts with
+`OLLAMA_MAX_LOADED_MODELS=1` (CPU default), meaning the router and fast models evict each
+other constantly. Nobody is setting `OLLAMA_MAX_LOADED_MODELS` before Sena starts.
+
+### What to build — `src/llm/ollama_manager.py`
+
+```python
+class OllamaProcessManager:
+    """Singleton — owns the Ollama process lifecycle."""
+
+    async def ensure_running(self, settings: Settings) -> tuple[bool, str]:
+        """
+        If Ollama is already running: return (True, "already running").
+        If not running and manage=True: find binary, start with env vars, wait for /api/tags.
+        Sets OLLAMA_MAX_LOADED_MODELS = number of unique model names configured.
+        Sets OLLAMA_NUM_PARALLEL = same value.
+        Returns (success, message).
+        """
+
+    async def verify_concurrency(self, base_url: str, expected_model_names: list[str]) -> None:
+        """
+        After model preloading, call GET /api/ps.
+        If fewer models are resident than expected, log a WARNING (non-fatal).
+        Warning text should tell the user to set OLLAMA_MAX_LOADED_MODELS.
+        """
+
+    async def shutdown(self) -> None:
+        """
+        Stop Ollama only if WE started it (we_started=True flag).
+        If Ollama was already running when Sena launched, do NOT kill it.
+        """
+
+def get_ollama_manager() -> OllamaProcessManager:
+    """Return the singleton instance."""
+```
+
+Binary search order on Windows: `PATH` → `%LOCALAPPDATA%\Programs\Ollama\ollama.exe`
+
+### Wire-up required
+
+1. In `src/config/settings.py` — add to `LLMConfig`:
+```python
+class OllamaProcessConfig(BaseModel):
+    manage: bool = True
+    startup_timeout: int = 30
+
+# Inside LLMConfig:
+ollama_process: OllamaProcessConfig = Field(default_factory=OllamaProcessConfig)
+```
+
+2. In `src/core/bootstrapper.py` — replace `_check_ollama()` body:
+```python
+from src.llm.ollama_manager import get_ollama_manager
+manager = get_ollama_manager()
+success, message = await manager.ensure_running(self.settings)
+# Return CheckResult based on success/message
+```
+
+3. In `src/llm/models/model_registry.py` — after `_preload_all_concurrent()`:
+```python
+from src.llm.ollama_manager import get_ollama_manager
+expected = list({info.config.name for info in self._models.values() if info.config.name})
+await get_ollama_manager().verify_concurrency(self._settings.llm.base_url, expected)
+```
+
+4. In `src/core/sena.py` or `src/main.py` — on shutdown:
+```python
+from src.llm.ollama_manager import get_ollama_manager
+await get_ollama_manager().shutdown()
+```
+
+---
+
+## Backend Debt 2 — Dead and Incorrect Config Fields in LLMConfig
+
+**Status:** Open
+**Priority:** MEDIUM — causes confusion, misleads future developers
+**File:** `src/config/settings.py`
+
+### Issues
+
+1. `switch_cooldown: int = 5` — `switch_to()` is now a thin alias for `get_client()`.
+   Cooldown logic was removed. This field does nothing. **Remove it.**
+
+2. `allow_runtime_switch: bool = True` — no code reads this flag. **Remove it.**
+
+3. `ollama_keep_alive: str = "-1"` — typed as `str` but the intent is an integer (`-1`).
+   `OllamaClient._keep_alive_value()` already converts numeric strings to int at runtime,
+   but the type annotation is misleading. **Change to `Union[int, str]` with default `-1` (int).**
+
+### Fix
+```python
+# In LLMConfig — remove these two fields entirely:
+# allow_runtime_switch: bool = True   ← DELETE
+# switch_cooldown: int = 5            ← DELETE
+
+# Change keep_alive type:
+ollama_keep_alive: int | str = -1   # int -1 = keep loaded indefinitely
+```
+
+---
+
+## Backend Debt 3 — mem0_client.py Needs Full Rewrite or Removal
+
+**Status:** Open
+**Priority:** MEDIUM — reliability risk, wrong logger, sync/async mixing
+**File:** `src/memory/mem0_client.py`
+
+### Issues
+
+1. **Uses `loguru` directly** (`from loguru import logger`) instead of the project logger
+   (`from src.utils.logger import logger`). Log messages from mem0 have no structured
+   fields and don't appear in the session log context.
+
+2. **`_ensure_local_memory()` is synchronous** and is called from async methods, blocking
+   the event loop (see Backend Bug 4 above).
+
+3. **`builtins.input` is monkey-patched** to suppress a mem0 interactive prompt:
+   ```python
+   builtins.input = lambda *_args, **_kwargs: "n"
+   ```
+   This is a dangerous global side-effect that affects the entire Python process.
+
+4. **Update not supported in library mode** — `update_memory()` returns an error in the
+   only mode that actually works offline.
+
+5. **Tag search not supported in library mode** — `get_memories_by_tag()` returns empty
+   in library mode.
+
+### Decision required
+Either:
+- **Rewrite** `mem0_client.py` as a proper async class using `asyncio.get_event_loop().run_in_executor`
+  for the synchronous mem0 library calls, using the project logger, removing the `builtins.input`
+  patch (find a proper way to suppress the prompt or patch only locally).
+- **Remove** mem0 integration entirely and rely solely on the custom `LongTermMemory` +
+  embeddings system, which is already more capable for Sena's use case.
+
+If removing: delete `mem0_client.py`, remove `Mem0Client` from `MemoryManager.__init__()`,
+remove `mem0` from `requirements.txt`, remove `MemoryConfig.mem0` from `settings.py`,
+and remove the `mem0_connected` check from the `/health` endpoint.
+
+---
+
+## Backend Debt 4 — Wire Up `local_domain.py` and `elevation.py`
+
+**Status:** Open
+**Priority:** MEDIUM — these are complete implementations that are never called
+**Files:** `src/core/local_domain.py`, `src/core/elevation.py`, `src/api/server.py`
+
+### Context
+`local_domain.py` registers `sena.local → 127.0.0.1` in the OS hosts file and flushes
+the DNS cache. It is a complete, well-written async implementation. It is never called.
+
+`elevation.py` provides UAC elevation (Windows) and sudo re-launch (Unix). It is complete.
+It is never called.
+
+Both files were clearly written with a vision: Sena as a local service accessible at
+`http://sena.local` rather than `http://127.0.0.1:8000`. This is the right direction for
+"behaving as part of the computer."
+
+### Fix — `src/api/server.py` lifespan handler
+Add to the startup section of the `lifespan` context manager:
+
+```python
+# Register sena.local in the OS hosts file (non-fatal if it fails)
+try:
+    from src.core.local_domain import setup_sena_local
+    local_ok = await setup_sena_local()
+    if local_ok:
+        logger.info("sena.local is configured — accessible at http://sena.local")
+    else:
+        logger.info("sena.local not configured — using http://127.0.0.1:8000")
+except Exception as e:
+    logger.warning(f"local_domain setup failed (non-fatal): {e}")
+```
+
+### Note on elevation.py
+`elevation.py`'s `ensure_admin()` is intentionally NOT called automatically at runtime —
+requiring admin elevation on every launch is bad UX. It should only be called from an
+installer/setup context, or gated behind a user opt-in. Document this clearly in the file.
+
+---
+
+## ═══════════════════════════════════════════════
+## ARCHITECTURE — True MAS Refactor (Big Work)
+## ═══════════════════════════════════════════════
+
+---
+
+## Architecture 1 — Sena Is Not a MAS: It Is a Request-Response Pipeline
+
+**Status:** Planning
+**Priority:** This is the root cause of "MAS isn't working"
+
+### Current reality
+The entire system collapses to a single sequential funnel:
+
+```
+User message → Sena singleton → LLMManager → classify → generate → done.
+```
+
+Nothing runs between messages. There are no background agents. The "MAS" label refers
+to routing between model types (ROUTER, FAST, CRITICAL, CODE) — not to actual
+autonomous agents with state, goals, and independent lifecycles.
+
+### What real MAS requires for Sena
+Persistent `asyncio.Task`s that run continuously, not only during a request:
+
+```
+MemoryAgent     — background task: continuously compresses, deduplicates,
+                  and re-ranks long-term memories every N minutes.
+
+PersonalityAgent — background task: runs inference on recent conversation
+                   snapshots on a timer, not only every N messages in _post_process().
+
+PlannerAgent    — receives a user task, breaks it into subtasks, maintains
+                   task state between messages. Responds to follow-ups in context
+                   of an ongoing plan.
+
+ExecutorAgent   — carries out individual LLM generation subtasks. Multiple
+                   instances can run concurrently for different subtasks.
+
+MonitorAgent    — watches for system events (file changes, clipboard, hotkeys)
+                   and pushes them into the agent message bus as stimuli.
+```
+
+### Communication pattern to adopt
+Agents should communicate via `asyncio.Queue`, not via direct method calls.
+Each agent owns an inbox queue. The orchestrator routes messages between agents.
+This allows:
+- Agents to be independently replaceable
+- Multiple executor agents to run concurrently for parallel subtasks
+- Non-blocking: a slow agent doesn't block the orchestrator
+
+### Minimum viable first step
+Before the full agent architecture, extract background tasks from `_post_process()` into
+persistent `asyncio.Task` objects started in `Sena.initialize()`:
+
+```python
+# In Sena.initialize():
+self._background_tasks = [
+    asyncio.create_task(self._memory_compression_loop()),
+    asyncio.create_task(self._personality_inference_loop()),
+]
+
+async def _memory_compression_loop(self):
+    """Runs forever. Compresses long-term memory every 30 minutes."""
+    while True:
+        await asyncio.sleep(1800)
+        try:
+            await mem_mgr.extract_and_store_learnings(...)
+        except Exception as e:
+            logger.warning(f"Background memory compression failed: {e}")
+
+async def _personality_inference_loop(self):
+    """Runs forever. Runs personality inference on a timer."""
+    while True:
+        await asyncio.sleep(600)
+        try:
+            await pm.infer_from_conversation(...)
+        except Exception as e:
+            logger.warning(f"Background personality inference failed: {e}")
+```
+
+Cancel tasks in `Sena.shutdown()`.
+
+### Full agent architecture (follow-up PR)
+Design a `BaseAgent` class with:
+- `inbox: asyncio.Queue`
+- `async def run()` — the agent's event loop
+- `async def handle(message: AgentMessage)` — process one message
+
+Implement `AgentMessage` dataclass with `type`, `payload`, `reply_to`.
+Build a lightweight `AgentBus` that routes messages between registered agents.
+This is the foundation for true MAS and should live in `src/core/agents/`.
+
+---
+
+## Architecture 2 — "Behaves as Part of the Computer" Requirements
+
+**Status:** Planning
+
+### Vision
+Sena should function as a persistent OS-level service, not a web app you open.
+The following capabilities define what "part of the computer" means:
+
+| Capability | Status | Notes |
+|---|---|---|
+| Accessible at `sena.local` | Built, not wired | Wire `local_domain.py` — see Backend Debt 4 |
+| Runs as background service | Not started | Electron + PyInstaller packaging partially handles this |
+| System tray presence | Not started | Electron provides `Tray` API |
+| Global hotkey (e.g. Ctrl+Space) | Not started | Electron `globalShortcut` |
+| Clipboard monitoring | Not started | Electron `clipboard` API + polling |
+| File system awareness | Not started | `watchdog` (Python) or Electron `fs.watch` |
+| OS notifications | Not started | Electron `Notification` API |
+| Proactive behavior | Not started | Depends on Agent architecture above |
+
+### Implementation order (suggested)
+1. Wire `sena.local` (1 hour — already built)
+2. System tray with show/hide + quit (Electron `Tray`)
+3. Global hotkey to open/focus Sena
+4. Background service: OS startup entry (Windows: registry `HKCU\...\Run`)
+5. File system watcher → MonitorAgent → feed into agent message bus
+
+---
+
+## ═══════════════════════════════════════════════
+## TESTING — No core tests exist. This is critical.
+## ═══════════════════════════════════════════════
+
+---
+
+## Testing Debt 1 — Zero Tests for Core Backend Systems
+
+**Status:** Open
+**Priority:** HIGH — no safety net for any refactor
+
+### Current state
+Only 4 test files exist, all in `src/extensions/tests/`. No tests exist for:
+- `src/llm/` (model registry, router, ollama client)
+- `src/core/sena.py` (the entire pipeline)
+- `src/memory/` (any memory operation)
+- `src/api/routes/` (any HTTP endpoint)
+- `src/config/settings.py`
+
+### Minimum test suite to write (in priority order)
+
+1. **`src/tests/test_model_registry.py`**
+   - Test `ensure_loaded()` concurrent access does not cause double-load
+   - Test `get_client()` raises `LLMModelNotFoundError` for unregistered model
+   - Test `_preload_all_concurrent()` skips duplicate model names
+
+2. **`src/tests/test_router.py`**
+   - Test `_quick_classify()` returns correct intent for known keywords
+   - Test circuit breaker opens after threshold failures
+   - Test circuit breaker routes to FAST model while open
+
+3. **`src/tests/test_sena_pipeline.py`**
+   - Test `process()` with mocked LLMManager returns a response
+   - Test extension results ARE injected into context (regression for Backend Bug 2)
+   - Test memory retrieval is cancelled when intent does not need it
+
+4. **`src/tests/test_memory.py`**
+   - Test `remember()` stores and `recall()` retrieves
+   - Test embedding fallback when embedding model is unavailable
+
+5. **`src/tests/test_settings.py`**
+   - Test `from_yaml()` loads correct values
+   - Test `to_yaml()` + `reload_settings()` round-trips correctly
+
+Use `pytest-asyncio` for all async tests. Mock Ollama HTTP with `respx` or `pytest-httpx`.
+
+---
 
 ---
 
