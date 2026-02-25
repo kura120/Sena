@@ -17,6 +17,8 @@ const defaultModelSettings: ModelSettings = {
     code: null,
     router: null,
   },
+  reasoning_model: null,
+  reasoning_enabled: false,
 };
 
 export function SetupWindow() {
