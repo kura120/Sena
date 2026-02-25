@@ -12,7 +12,7 @@ Uses loguru for advanced logging with:
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Optional
 
 from loguru import logger as _loguru_logger
 
@@ -36,7 +36,7 @@ def setup_logger(
 ) -> None:
     """
     Setup the logging system.
-    
+
     Args:
         level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
         log_file: Path to the main log file
@@ -45,27 +45,27 @@ def setup_logger(
         retention: How long to keep old logs
     """
     global _current_level, _initialized
-    
+
     # Clear existing handlers
     logger.remove()
-    
+
     _current_level = level.upper()
-    
-    # Console handler with rich formatting
+
+    # Console handler — clean format, no module path noise
     logger.add(
         sys.stderr,
         level=_current_level,
-        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>",
         colorize=True,
-        backtrace=True,
-        diagnose=True,
+        backtrace=False,
+        diagnose=False,
     )
-    
+
     # File handler
     if log_file:
         log_path = Path(log_file)
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         logger.add(
             str(log_path),
             level=_current_level,
@@ -76,14 +76,14 @@ def setup_logger(
             backtrace=True,
             diagnose=True,
         )
-    
+
     # Session handler (one file per session/day)
     if session_dir:
         session_path = Path(session_dir)
         session_path.mkdir(parents=True, exist_ok=True)
-        
+
         session_file = session_path / f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-        
+
         logger.add(
             str(session_file),
             level="DEBUG",  # Session logs capture everything
@@ -92,7 +92,7 @@ def setup_logger(
             retention="30 days",
             compression="zip",
         )
-    
+
     _initialized = True
     logger.info(f"Logging initialized at level {_current_level}")
 
@@ -100,10 +100,10 @@ def setup_logger(
 def get_logger(name: str) -> Any:
     """
     Get a logger instance for a specific module.
-    
+
     Args:
         name: Name of the module
-        
+
     Returns:
         Logger instance bound to the module name
     """
@@ -113,21 +113,21 @@ def get_logger(name: str) -> Any:
 class LogContext:
     """
     Context manager for adding context to log messages.
-    
+
     Usage:
         with LogContext(user_id="123", session_id="abc"):
             logger.info("Processing request")
     """
-    
+
     def __init__(self, **kwargs: Any):
         self.context = kwargs
         self._token: Any = None
-    
+
     def __enter__(self) -> "LogContext":
         self._token = logger.contextualize(**self.context)
         self._token.__enter__()
         return self
-    
+
     def __exit__(self, *args: Any) -> None:
         if self._token:
             self._token.__exit__(*args)
@@ -136,23 +136,20 @@ class LogContext:
 def log_exception(exc: Exception, context: Optional[dict[str, Any]] = None) -> None:
     """
     Log an exception with context.
-    
+
     Args:
         exc: The exception to log
         context: Additional context information
     """
     context = context or {}
-    logger.opt(exception=True).error(
-        f"Exception occurred: {type(exc).__name__}: {exc}",
-        **context
-    )
+    logger.opt(exception=True).error(f"Exception occurred: {type(exc).__name__}: {exc}", **context)
 
 
 # Convenience functions for structured logging
 def log_event(event_type: str, data: dict[str, Any], level: str = "INFO") -> None:
     """
     Log a structured event.
-    
+
     Args:
         event_type: Type of the event
         data: Event data
@@ -169,7 +166,7 @@ def log_performance(
 ) -> None:
     """
     Log performance metrics.
-    
+
     Args:
         operation: Name of the operation
         duration_ms: Duration in milliseconds
@@ -187,7 +184,7 @@ def log_llm_call(
 ) -> None:
     """
     Log LLM API call.
-    
+
     Args:
         model: Model name
         prompt_tokens: Number of prompt tokens
@@ -208,17 +205,14 @@ def log_memory_operation(
 ) -> None:
     """
     Log memory system operation.
-    
+
     Args:
         operation: Operation type (store, retrieve, etc.)
         memory_type: Type of memory (short_term, long_term)
         count: Number of items affected
         duration_ms: Operation duration in milliseconds
     """
-    logger.debug(
-        f"[MEMORY] {operation.upper()} | Type: {memory_type} | "
-        f"Count: {count} | Duration: {duration_ms:.2f}ms"
-    )
+    logger.debug(f"[MEMORY] {operation.upper()} | Type: {memory_type} | Count: {count} | Duration: {duration_ms:.2f}ms")
 
 
 def log_extension_event(
@@ -230,7 +224,7 @@ def log_extension_event(
 ) -> None:
     """
     Log extension event.
-    
+
     Args:
         extension_name: Name of the extension
         event: Event type (load, execute, reload, etc.)
@@ -240,13 +234,13 @@ def log_extension_event(
     """
     status = "SUCCESS" if success else "FAILED"
     msg = f"[EXTENSION] {extension_name} | {event.upper()} | {status}"
-    
+
     if duration_ms is not None:
         msg += f" | {duration_ms:.2f}ms"
-    
+
     if error:
         msg += f" | Error: {error}"
-    
+
     if success:
         logger.debug(msg)
     else:
