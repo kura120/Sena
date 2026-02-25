@@ -392,6 +392,50 @@ class LLMManager:
             logger.error(f"generate_simple failed: {e}", exc_info=True)
             return ""
 
+    async def generate_with_model(
+        self,
+        model_type: ModelType,
+        prompt: str,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+    ) -> str:
+        """
+        Generate a response using a specific model type, bypassing the router.
+
+        Used internally for the reasoning step and any pipeline stage that must
+        target a particular model regardless of intent classification.
+
+        Args:
+            model_type: The exact model type to use.
+            prompt:     Full prompt string (treated as a single user message).
+            max_tokens: Override max tokens for this call.
+            temperature: Override temperature for this call.
+
+        Returns:
+            Generated text string, or empty string on failure.
+        """
+        if not self._initialized:
+            logger.warning("generate_with_model: LLM manager not initialized")
+            return ""
+
+        try:
+            model = await self._registry.get_client(model_type)
+            messages = [Message.user(prompt)]
+            response = await model.generate(
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+            self._registry.record_usage(
+                model_type=model_type,
+                tokens=response.total_tokens,
+                duration_ms=response.duration_ms,
+            )
+            return response.content if response else ""
+        except Exception as e:
+            logger.error(f"generate_with_model({model_type.value}) failed: {e}", exc_info=True)
+            return ""
+
     def get_stats(self) -> dict[str, Any]:
         """
         Get LLM usage statistics.

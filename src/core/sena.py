@@ -28,6 +28,7 @@ from src.database.repositories.memory_repo import MemoryRepository
 from src.extensions.manager import ExtensionManager, get_extension_manager
 from src.llm.manager import LLMManager
 from src.llm.models.base import LLMResponse, Message, MessageRole
+from src.llm.prompts.reasoning_prompts import build_reasoning_prompt, parse_reasoning_response
 from src.llm.prompts.system_prompts import build_system_prompt
 from src.llm.router import IntentResult
 from src.utils.logger import logger
@@ -299,6 +300,69 @@ class Sena:
                         ext_lines.append(f"- {name}: {result.get('output', '')}")
                     ctx.memory_context.append(Message(role=MessageRole.SYSTEM, content="\n".join(ext_lines)))
 
+            # 3.5. Reasoning step — runs before LLM generation when enabled.
+            # Non-critical: any failure is logged and the pipeline continues.
+            if self.settings.llm.reasoning_enabled and self.settings.llm.reasoning_model:
+                try:
+                    ctx.set_stage(ProcessingStage.REASONING)
+                    await self._on_stage_change(ctx.stage, "Running reasoning model…")
+
+                    # Build flat strings for the reasoning prompt
+                    mem_lines = [m.content for m in ctx.memory_context if m.role == MessageRole.SYSTEM]
+                    memories_str = "\n".join(mem_lines)
+
+                    ext_str_parts = []
+                    for name, result in ctx.extension_results.items():
+                        if result.get("status") == "success":
+                            ext_str_parts.append(f"- {name}: {result.get('output', '')}")
+                    extensions_str = "\n".join(ext_str_parts)
+
+                    # Personality block (best-effort; empty if unavailable)
+                    personality_str = ""
+                    try:
+                        from src.memory.personality import PersonalityManager
+
+                        pm = PersonalityManager.get_instance()
+                        personality_str = await pm.get_personality_block()
+                    except Exception:
+                        pass
+
+                    reasoning_prompt = build_reasoning_prompt(
+                        user_message=user_input,
+                        memories=memories_str,
+                        personality=personality_str,
+                        extensions=extensions_str,
+                    )
+
+                    raw_reasoning = await self._llm_manager.generate_with_model(
+                        ModelType.REASONING,
+                        reasoning_prompt,
+                    )
+
+                    think_content, reasoning_brief = parse_reasoning_response(raw_reasoning)
+
+                    # Broadcast chain-of-thought + brief to connected frontends
+                    from src.api.websocket.manager import ws_manager
+
+                    await ws_manager.broadcast_llm_thinking(think_content, reasoning_brief)
+
+                    # Prepend brief to the fast model's context so it can
+                    # articulate what the reasoning model worked out.
+                    if reasoning_brief:
+                        ctx.memory_context.append(
+                            Message(
+                                role=MessageRole.SYSTEM,
+                                content=f"[Reasoning brief]: {reasoning_brief}",
+                            )
+                        )
+
+                    logger.debug(
+                        f"Reasoning complete — brief: {reasoning_brief[:120] if reasoning_brief else '(empty)'}"
+                    )
+
+                except Exception as _reasoning_exc:
+                    logger.warning(f"Reasoning step failed (continuing without it): {_reasoning_exc}")
+
             # 4. Generate response
             if stream:
                 # For streaming, we'll accumulate the response
@@ -404,6 +468,64 @@ class Sena:
                     for name, result in successful_exts.items():
                         ext_lines.append(f"- {name}: {result.get('output', '')}")
                     ctx.memory_context.append(Message(role=MessageRole.SYSTEM, content="\n".join(ext_lines)))
+
+            # 3.5. Reasoning step — runs before LLM streaming when enabled.
+            # Non-critical: any failure is logged and the pipeline continues.
+            if self.settings.llm.reasoning_enabled and self.settings.llm.reasoning_model:
+                try:
+                    ctx.set_stage(ProcessingStage.REASONING)
+                    await self._on_stage_change(ctx.stage, "Running reasoning model…")
+
+                    mem_lines = [m.content for m in ctx.memory_context if m.role == MessageRole.SYSTEM]
+                    memories_str = "\n".join(mem_lines)
+
+                    ext_str_parts = []
+                    for name, result in ctx.extension_results.items():
+                        if result.get("status") == "success":
+                            ext_str_parts.append(f"- {name}: {result.get('output', '')}")
+                    extensions_str = "\n".join(ext_str_parts)
+
+                    personality_str = ""
+                    try:
+                        from src.memory.personality import PersonalityManager
+
+                        pm = PersonalityManager.get_instance()
+                        personality_str = await pm.get_personality_block()
+                    except Exception:
+                        pass
+
+                    reasoning_prompt = build_reasoning_prompt(
+                        user_message=user_input,
+                        memories=memories_str,
+                        personality=personality_str,
+                        extensions=extensions_str,
+                    )
+
+                    raw_reasoning = await self._llm_manager.generate_with_model(
+                        ModelType.REASONING,
+                        reasoning_prompt,
+                    )
+
+                    think_content, reasoning_brief = parse_reasoning_response(raw_reasoning)
+
+                    from src.api.websocket.manager import ws_manager
+
+                    await ws_manager.broadcast_llm_thinking(think_content, reasoning_brief)
+
+                    if reasoning_brief:
+                        ctx.memory_context.append(
+                            Message(
+                                role=MessageRole.SYSTEM,
+                                content=f"[Reasoning brief]: {reasoning_brief}",
+                            )
+                        )
+
+                    logger.debug(
+                        f"Reasoning complete (stream) — brief: {reasoning_brief[:120] if reasoning_brief else '(empty)'}"
+                    )
+
+                except Exception as _reasoning_exc:
+                    logger.warning(f"Reasoning step failed in stream (continuing without it): {_reasoning_exc}")
 
             # 4. Stream response
             ctx.set_stage(ProcessingStage.LLM_STREAMING)

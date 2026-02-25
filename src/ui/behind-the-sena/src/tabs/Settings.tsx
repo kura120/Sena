@@ -54,6 +54,8 @@ type LlmSettingsResponse = {
       code?: string | null;
       router?: string | null;
     };
+    reasoning_model?: string | null;
+    reasoning_enabled?: boolean;
   };
 };
 
@@ -217,6 +219,8 @@ export const Settings: React.FC = () => {
           code: data.data?.models?.code ?? null,
           router: data.data?.models?.router ?? null,
         },
+        reasoning_model: data.data?.reasoning_model ?? null,
+        reasoning_enabled: data.data?.reasoning_enabled ?? false,
       });
     } catch (err) {
       console.error("Failed to load LLM settings:", err);

@@ -21,6 +21,10 @@ ALWAYS REFER TO [Rules](RULES.md)
 | `src/llm/models/ollama_client.py` | keep_alive type already handled at runtime — verify |
 | `src/llm/router.py` | Race condition — bypasses per-model locking |
 | `src/llm/manager.py` | Caches embedding client correctly — verify it's used everywhere |
+| `src/memory/retrieval.py` | `extract_learnings()` is heuristic-only — replace with LLM-based extraction |
+| `src/memory/embeddings.py` | Creates a new uninitialized `LLMManager` on every call — inject shared instance |
+| `src/memory/long_term.py` | No deduplication before insert — add similarity check before storing |
+| `src/memory/manager.py` | ChromaDB in requirements but never wired — use it or remove it |
 | `src/api/server.py` | CORS wide-open — must use configured origins |
 | `src/api/websocket/manager.py` | Add llm_thinking event type |
 | `src/llm/prompts/` | Add reasoning_prompts.py |
@@ -37,7 +41,7 @@ ALWAYS REFER TO [Rules](RULES.md)
 
 ## Backend Bug 1 — Router Bypasses Per-Model Locking (Race Condition)
 
-**Status:** Open
+**Status:** ✅ DONE — `_llm_classify()` now uses `get_client()` with full circuit-breaker; per-model lock honoured
 **Priority:** CRITICAL — breaks MAS concurrency
 **File:** `src/llm/router.py`
 
@@ -94,7 +98,7 @@ Remove the old `get_model()` call and the manual `is_loaded` check entirely.
 
 ## Backend Bug 2 — Extension Results Are Never Injected Into the LLM Context
 
-**Status:** Open
+**Status:** ✅ DONE — `process()` and `stream()` both inject `ctx.extension_results` into `ctx.memory_context` before `generate()`
 **Priority:** HIGH — extensions silently have zero effect on responses
 **File:** `src/core/sena.py`
 
@@ -142,7 +146,7 @@ Also remove the dead `ext_lines` block at the end of `_execute_extensions()`.
 
 ## Backend Bug 3 — CORS Is Hardcoded Wide Open
 
-**Status:** Open
+**Status:** ✅ DONE — `server.py` now reads `settings.api.cors.origins`; wildcard removed
 **Priority:** HIGH — any web page can call Sena's API
 **File:** `src/api/server.py`
 
@@ -177,7 +181,7 @@ app.add_middleware(
 
 ## Backend Bug 4 — mem0 Blocks the Async Event Loop on Every Health Check
 
-**Status:** Open
+**Status:** ✅ DONE — mem0 removed entirely (Option B from Backend Debt 3); blocking call gone with it
 **Priority:** HIGH — freezes all requests for up to 1.5 s on each /health call
 **File:** `src/memory/mem0_client.py`
 
@@ -209,7 +213,7 @@ If doing a full rewrite, this blocking call disappears naturally.
 
 ## Backend Bug 5 — Two Disconnected Memory Systems in sena.py
 
-**Status:** Open
+**Status:** Open — partial: short-term still goes through `self._memory_repo.short_term` directly; full unification pending Memory Debt items
 **Priority:** MEDIUM — causes inconsistent memory state between storage and retrieval
 **File:** `src/core/sena.py`
 
@@ -249,7 +253,7 @@ turn in the `conversations` table), not for memory retrieval.
 
 ## Backend Debt 1 — OllamaProcessManager Does Not Exist
 
-**Status:** Open
+**Status:** ✅ DONE — `src/llm/ollama_manager.py` exists and is wired into `LLMManager.initialize()` and `ModelRegistry.initialize()`
 **Priority:** CRITICAL — root cause of all cold-start latency
 **Files to create:** `src/llm/ollama_manager.py`
 **Files to update:** `src/core/bootstrapper.py`, `src/config/settings.py`
@@ -335,7 +339,7 @@ await get_ollama_manager().shutdown()
 
 ## Backend Debt 2 — Dead and Incorrect Config Fields in LLMConfig
 
-**Status:** Open
+**Status:** ✅ DONE — `switch_cooldown` and `allow_runtime_switch` removed; `ollama_keep_alive` typed as `int | str = -1`
 **Priority:** MEDIUM — causes confusion, misleads future developers
 **File:** `src/config/settings.py`
 
@@ -364,7 +368,7 @@ ollama_keep_alive: int | str = -1   # int -1 = keep loaded indefinitely
 
 ## Backend Debt 3 — mem0_client.py Needs Full Rewrite or Removal
 
-**Status:** Open
+**Status:** ✅ DONE — removed entirely; `mem0ai` removed from `requirements.txt`; `MemoryConfig.mem0` removed from `settings.py`; `MemoryManager` no longer references `Mem0Client`; `/health` endpoint cleaned up
 **Priority:** MEDIUM — reliability risk, wrong logger, sync/async mixing
 **File:** `src/memory/mem0_client.py`
 
@@ -405,7 +409,7 @@ and remove the `mem0_connected` check from the `/health` endpoint.
 
 ## Backend Debt 4 — Wire Up `local_domain.py` and `elevation.py`
 
-**Status:** Open
+**Status:** ✅ DONE — `setup_sena_local()` called in `server.py` lifespan startup; non-fatal on failure; `elevation.py` documented as installer/opt-in only
 **Priority:** MEDIUM — these are complete implementations that are never called
 **Files:** `src/core/local_domain.py`, `src/core/elevation.py`, `src/api/server.py`
 
@@ -618,7 +622,7 @@ Use `pytest-asyncio` for all async tests. Mock Ollama HTTP with `respx` or `pyte
 
 ## Bug 1 — Processing Panel Disappears After Response (Should Collapse, Not Vanish)
 
-**Status:** Open
+**Status:** ✅ DONE — capture moved inside `try` block after `fetchJson` resolves; auto-collapse timeout wired; panel persists on message
 
 ### Symptom
 After Sena sends a response, the "thought process" dropdown disappears entirely.
@@ -662,7 +666,7 @@ Send a message. While loading the panel shows "Sena is thinking...". After respo
 
 ## Bug 2 — WebSocket Creates Multiple Clients on Chat Open/Close
 
-**Status:** Open
+**Status:** ✅ DONE — Chat now uses `addMessageHandler` + `connectSharedSocket` singleton; raw `openWebSocket` call removed
 
 ### Symptom
 Every time the Chat tab is opened or the component mounts, a new raw WebSocket connection
@@ -704,7 +708,7 @@ Backend terminal should show exactly ONE `/ws` connection total, not 3.
 
 ## Feature 1 — Rename + Clean Up Processing Panel
 
-**Status:** Not started — PR after Bug 1 and Bug 2 are fixed
+**Status:** ✅ DONE — dedup `reduceRight` logic in place in `sendMessage`; panel label cleaned up
 
 ### What
 The current `ThinkingPanel` component shows pipeline stage events. It is being confused
@@ -734,7 +738,7 @@ Store `dedupedStages` as `thinkingStages` on the message instead of raw `capture
 
 ## Feature 2 — Reasoning Pipeline + Thinking Panel (Main Feature)
 
-**Status:** Not started — implement after Feature 1
+**Status:** ✅ COMPLETE — all backend + frontend wiring done; reasoning_model default changed to `""` (no hardcode); configurable via Settings → LLM → Reasoning Pipeline toggle + model dropdown
 
 ### Architecture Decision (agreed with user)
 
@@ -955,6 +959,291 @@ These read/write via `GET /api/v1/settings` and `POST /api/v1/settings`.
 
 ---
 
+---
+
+## ═══════════════════════════════════════════════
+## MEMORY SYSTEM DEBT — Fix after reasoning pipeline
+## ═══════════════════════════════════════════════
+
+---
+
+## Memory Debt 1 — `extract_learnings()` Is Heuristic-Only, Not AI-Powered
+
+**Status:** Open
+**Priority:** HIGH — the single biggest gap vs mem0; most conversation facts are silently never stored
+**File:** `src/memory/retrieval.py`
+
+### Problem
+`extract_learnings()` scans conversation lines for hardcoded string patterns
+(`"I learned"`, `"User prefers"`, `"Note:"`, etc.). If those exact strings don't appear,
+nothing is stored — regardless of how much useful information was in the conversation.
+A message like "my name is Alex and I work at Google" stores nothing because it doesn't
+match any pattern.
+
+This is the root cause of Sena appearing to forget things immediately.
+
+### Current (wrong) code
+```python
+learning_patterns = {
+    "I learned", "I discovered", "User mentioned",
+    "User prefers", "User likes", ...
+}
+for pattern in learning_patterns:
+    if pattern.lower() in line.lower():
+        learnings.append(line)
+        break
+```
+
+### Fix
+Replace the heuristic loop with an LLM call. Use `LLMManager.generate_simple()` with a
+prompt that asks the model to extract a JSON array of facts worth remembering.
+
+```python
+# src/memory/retrieval.py — new extract_learnings()
+async def extract_learnings(
+    self, conversation: str, llm_manager=None
+) -> list[str]:
+    """Extract key learnings from conversation using LLM."""
+    if not conversation or not conversation.strip():
+        return []
+
+    # Lazy import to avoid circular dependency
+    if llm_manager is None:
+        try:
+            from src.llm.manager import LLMManager
+            llm_manager = LLMManager.get_instance()
+        except Exception:
+            return []
+
+    EXTRACTION_PROMPT = """You are an AI memory extraction system.
+Read the following conversation and extract ONLY facts that are worth
+remembering long-term about the user — preferences, personal details,
+stated goals, recurring topics, or anything Sena should recall later.
+
+Output a JSON array of short fact strings. Each fact must be:
+- Self-contained (understandable without the conversation)
+- Specific (not vague like "user talked about things")
+- About the USER, not about Sena
+
+If there are no memorable facts, return an empty array: []
+
+Conversation:
+{conversation}
+
+JSON array of facts:"""
+
+    try:
+        raw = await llm_manager.generate_simple(
+            prompt=EXTRACTION_PROMPT.format(conversation=conversation[-3000:]),
+            max_tokens=512,
+            temperature=0.1,
+        )
+        # Parse JSON — strip markdown fences if present
+        import json, re
+        raw = re.sub(r"```(?:json)?", "", raw).strip().rstrip("`").strip()
+        facts = json.loads(raw)
+        if isinstance(facts, list):
+            return [str(f).strip() for f in facts if str(f).strip()]
+        return []
+    except Exception as e:
+        logger.warning(f"LLM extraction failed, falling back to heuristics: {e}")
+        # Minimal heuristic fallback
+        return [
+            line.strip() for line in conversation.splitlines()
+            if any(p in line.lower() for p in ("my name is", "i prefer", "i work", "i like", "i hate", "remember that"))
+        ]
+```
+
+### Wire-up required
+`MemoryManager.extract_and_store_learnings()` calls `retrieval_engine.extract_learnings(conversation)`.
+Update it to pass the shared `LLMManager` instance:
+
+```python
+# src/memory/manager.py — extract_and_store_learnings()
+# Add llm_manager param and thread it through to extract_learnings:
+from src.llm.manager import LLMManager
+llm_mgr = LLMManager.get_instance() if LLMManager._instance else None
+learnings = await self.retrieval_engine.extract_learnings(
+    conversation=conversation,
+    llm_manager=llm_mgr,
+)
+```
+
+Also add `get_instance()` singleton pattern to `LLMManager` so the shared instance
+can be retrieved without re-initializing:
+
+```python
+# src/llm/manager.py
+_instance: Optional["LLMManager"] = None
+
+@classmethod
+def get_instance(cls) -> Optional["LLMManager"]:
+    return cls._instance
+
+@classmethod
+def set_instance(cls, instance: "LLMManager") -> None:
+    cls._instance = instance
+```
+
+Call `LLMManager.set_instance(self._llm_manager)` inside `Sena.initialize()` after
+the manager is ready.
+
+---
+
+## Memory Debt 2 — EmbeddingsHandler Creates a New Uninitialized LLMManager on Every Call
+
+**Status:** Open
+**Priority:** HIGH — wasteful, fragile, creates a new OllamaClient on every single embedding
+**File:** `src/memory/embeddings.py`
+
+### Problem
+```python
+# CURRENT (wrong) — creates a brand-new, uninitialized LLMManager on every call
+async def generate_embedding(self, text: str) -> Optional[list[float]]:
+    from src.llm.manager import LLMManager
+    llm_manager = LLMManager()          # ← fresh instance, never initialized
+    embedding = await llm_manager.get_embeddings(text=text, ...)
+```
+
+`get_embeddings()` internally creates yet another throwaway `OllamaClient`, calls it,
+then discards it. This means every embedding generation opens and closes an HTTP
+connection with no connection reuse. Under load (e.g. storing 20 memories) this
+hammers Ollama with 20 separate cold-start connections.
+
+### Fix
+Inject the shared `LLMManager` instance rather than constructing a new one.
+`EmbeddingsHandler` should accept an optional `llm_manager` parameter:
+
+```python
+# src/memory/embeddings.py
+class EmbeddingsHandler:
+    def __init__(
+        self,
+        model_name: str = "nomic-embed-text:latest",
+        llm_manager=None,
+    ):
+        self.model_name = model_name
+        self._llm_manager = llm_manager  # injected; falls back to creating one if None
+
+    async def generate_embedding(self, text: str) -> Optional[list[float]]:
+        if not text or not text.strip():
+            return None
+        try:
+            mgr = self._llm_manager
+            if mgr is None:
+                from src.llm.manager import LLMManager
+                mgr = LLMManager.get_instance()
+            if mgr is None:
+                return None
+            return await mgr.get_embeddings(text=text, model_name=self.model_name)
+        except Exception as e:
+            logger.error(f"Error generating embedding: {e}")
+            return None
+```
+
+Update `MemoryManager.__init__()` to pass the LLM manager to `EmbeddingsHandler`:
+
+```python
+# src/memory/manager.py — __init__
+self.embeddings = EmbeddingsHandler(
+    model_name=settings.memory.embeddings.model,
+    llm_manager=None,  # set later via set_llm_manager() once LLM is ready
+)
+
+def set_llm_manager(self, llm_manager) -> None:
+    """Inject the initialized LLM manager so embeddings reuse the connection."""
+    self.embeddings._llm_manager = llm_manager
+    self.long_term._embeddings_handler = self.embeddings
+```
+
+Call `MemoryManager.get_instance().set_llm_manager(self._llm_manager)` inside
+`Sena.initialize()` after both LLM and memory are ready.
+
+---
+
+## Memory Debt 3 — Long-Term Memory Has No Deduplication
+
+**Status:** Open
+**Priority:** MEDIUM — same fact gets stored dozens of times across sessions; search results polluted with duplicates
+**File:** `src/memory/long_term.py`, `src/memory/manager.py`
+
+### Problem
+`LongTermMemory.add()` unconditionally inserts a new row every time. There is no check
+for whether the same (or very similar) fact already exists. After a few weeks of use
+the database will contain hundreds of near-duplicate rows like:
+- "User's name is Alex"
+- "The user's name is Alex"
+- "Alex is the user's name"
+
+These clog search results and degrade retrieval quality.
+
+### Fix
+In `MemoryManager.remember()`, before calling `long_term.add()`, search for existing
+memories with high cosine similarity (>= 0.92). If one is found, skip the insert:
+
+```python
+# src/memory/manager.py — remember()
+async def remember(self, content: str, metadata: Optional[dict] = None) -> dict[str, Any]:
+    embedding = await self.embeddings.generate_embedding(content)
+
+    # Deduplication: skip if a near-identical memory already exists
+    if embedding is not None:
+        existing = await self.long_term.search(
+            query=content,
+            embedding=embedding,
+            k=1,
+        )
+        if existing and existing[0].get("relevance", 0) >= 0.92:
+            logger.debug(
+                f"Skipping duplicate memory (similarity={existing[0]['relevance']:.3f}): {content[:60]}"
+            )
+            return {"memory_id": existing[0]["memory_id"], "status": "duplicate_skipped"}
+
+    result = await self.long_term.add(content=content, metadata=metadata, embedding=embedding)
+    # ... rest of method unchanged
+```
+
+The threshold `0.92` is conservative — only near-verbatim duplicates are skipped.
+Lower it to `0.85` if you want more aggressive deduplication (catches paraphrases too).
+
+---
+
+## Memory Debt 4 — ChromaDB Is in Requirements But Never Used
+
+**Status:** Open
+**Priority:** LOW — not a bug, but chromadb adds ~300 MB of install weight for zero benefit
+**Files:** `src/memory/long_term.py`, `requirements.txt`, `src/config/settings.py`
+
+### Problem
+`chromadb>=0.4.22` is listed in `requirements.txt`. `VectorDBConfig` exists in
+`settings.py` with `provider: str = "chroma"`. But `LongTermMemory` never imports or
+uses ChromaDB — it does its own cosine similarity in SQLite + numpy.
+
+The custom SQLite approach is fine for up to ~10,000 memories (loads all embeddings
+into RAM for comparison). Beyond that it becomes slow.
+
+### Decision required — pick one:
+
+**Option A — Remove ChromaDB (recommended for now)**
+- Delete `chromadb` from `requirements.txt`
+- Remove `VectorDBConfig` from `settings.py`
+- Accept the SQLite approach until scale demands otherwise
+- When Sena's memory grows to 10k+ entries, revisit
+
+**Option B — Wire ChromaDB as the embedding store**
+- Replace SQLite embedding columns with ChromaDB collection
+- Keep SQLite only for content + metadata (source of truth)
+- ChromaDB handles ANN search; SQLite handles structured queries
+- More complex but scales to millions of memories
+- Implementation: `LongTermMemory` gets a `chroma_client` field; `add()` calls
+  `collection.add()`; `search()` calls `collection.query()` instead of numpy loop
+
+If choosing Option B, `VectorDBConfig.persist_dir` must be resolved via
+`resolve_data_path()` (same pattern as the SQLite DB path) so it lands under
+`%APPDATA%/Sena/data/memory/chroma` in production.
+
+---
+
 ## Verification Checklist
 
 | # | Test | Expected |
@@ -966,3 +1255,7 @@ These read/write via `GET /api/v1/settings` and `POST /api/v1/settings`.
 | 5 | Send message with reasoning disabled | No Thinking panel; ProcessingPanel only |
 | 6 | DevTools > WS | See both `processing_update` and `llm_thinking` event types |
 | 7 | Check Settings > LLM | reasoning_model field and toggle present |
+| 8 | Tell Sena "my name is Alex and I work at Google", send a second message, check DB | `memory_long_term` table contains a row with "Alex" and "Google" — LLM extraction working |
+| 9 | Tell Sena the same fact twice (two separate messages) | Second insert is skipped — `duplicate_skipped` status in logs; DB row count stays the same |
+| 10 | Add 5 memories rapidly (e.g. via `/api/v1/memory` POST in a loop) | Backend logs show a single Ollama embedding connection reused, not 5 separate ones |
+| 11 | `pip show chromadb` after Memory Debt 4 Option A | Package not installed; no import errors on startup |

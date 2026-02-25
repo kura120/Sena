@@ -33,6 +33,7 @@ class WSEventType(str, Enum):
     MEMORY_UPDATE = "memory_update"
     EXTENSION_UPDATE = "extension_update"
     PERSONALITY_UPDATE = "personality_update"
+    LLM_THINKING = "llm_thinking"
     LOG = "log"
     ERROR = "error"
     PONG = "pong"
@@ -275,6 +276,16 @@ class WebSocketManager:
                     "recoverable": recoverable,
                 },
             )
+        )
+
+    async def broadcast_llm_thinking(self, think_content: str, brief: str) -> int:
+        """Broadcast a reasoning model's chain-of-thought and brief to the processing channel."""
+        return await self.broadcast(
+            WSMessage(
+                type=WSEventType.LLM_THINKING.value,
+                data={"think_content": think_content, "brief": brief},
+            ),
+            channel="processing",
         )
 
     async def broadcast_memory_update(

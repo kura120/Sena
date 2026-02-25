@@ -80,13 +80,11 @@ class LLMConfig(BaseModel):
 
     ollama_process: "OllamaProcessConfig" = Field(default_factory=lambda: OllamaProcessConfig())
 
-
-class Mem0Config(BaseModel):
-    """mem0 configuration settings."""
-
-    mode: str = "library"
-    api_key: Optional[str] = None
-    base_url: Optional[str] = None
+    # Reasoning model (chain-of-thought, used before FAST model).
+    # Empty string = disabled even if reasoning_enabled=True.
+    # Configure via Settings → LLM → Reasoning Model.
+    reasoning_model: str = ""
+    reasoning_enabled: bool = False
 
 
 class VectorDBConfig(BaseModel):
@@ -149,8 +147,7 @@ class PersonalityConfig(BaseModel):
 class MemoryConfig(BaseModel):
     """Complete memory configuration."""
 
-    provider: str = "mem0"
-    mem0: Mem0Config = Field(default_factory=Mem0Config)
+    provider: str = "local"
     vector_db: VectorDBConfig = Field(default_factory=VectorDBConfig)
     embeddings: EmbeddingsConfig = Field(default_factory=EmbeddingsConfig)
     short_term: ShortTermMemoryConfig = Field(default_factory=ShortTermMemoryConfig)
@@ -224,7 +221,7 @@ class ExtensionsConfig(BaseModel):
 class CORSConfig(BaseModel):
     """CORS configuration."""
 
-    enabled: bool = True
+    enabled: bool = False
     origins: list[str] = Field(
         default_factory=lambda: [
             "http://localhost:3000",
@@ -233,6 +230,10 @@ class CORSConfig(BaseModel):
             "http://127.0.0.1:3000",
             "http://127.0.0.1:3001",
             "http://127.0.0.1:5173",
+            # Electron windows loaded from file:// send Origin: null.
+            # Without this entry the CORS middleware blocks every response
+            # to the loader/dashboard when running the packaged app.
+            "null",
         ]
     )
 

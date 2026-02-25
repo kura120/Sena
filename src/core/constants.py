@@ -27,6 +27,7 @@ class ProcessingStage(str, Enum):
     MEMORY_RETRIEVAL = "memory_retrieval"
     EXTENSION_CHECK = "extension_check"
     EXTENSION_EXECUTION = "extension_execution"
+    REASONING = "reasoning"
     LLM_PROCESSING = "llm_processing"
     LLM_STREAMING = "llm_streaming"
     POST_PROCESSING = "post_processing"
@@ -45,6 +46,7 @@ class ModelType(str, Enum):
     CRITICAL = "critical"
     CODE = "code"
     ROUTER = "router"
+    REASONING = "reasoning"
 
 
 MODEL_TYPES: Final[list[str]] = [m.value for m in ModelType]
@@ -177,6 +179,7 @@ class WSEventType(str, Enum):
     PROCESSING_UPDATE = "processing_update"
     MEMORY_UPDATE = "memory_update"
     EXTENSION_UPDATE = "extension_update"
+    LLM_THINKING = "llm_thinking"
     LOG = "log"
     ERROR = "error"
     PONG = "pong"

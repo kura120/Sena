@@ -91,12 +91,8 @@ api:
   port: 8000
   workers: 1
   cors:
-    enabled: true
-    origins:
-      - http://localhost:3000
-      - http://localhost:3001
-      - http://127.0.0.1:3000
-      - http://127.0.0.1:3001
+    enabled: false
+    origins: []
   rate_limit:
     enabled: false
     requests_per_minute: 60

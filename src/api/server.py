@@ -18,7 +18,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncIterator
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -38,6 +39,7 @@ from src.api.routes import (
 )
 from src.api.websocket.manager import ws_manager
 from src.config.settings import get_app_data_dir, get_settings
+from src.core.exceptions import SenaException
 from src.core.runtime import RUNTIME_ID, get_runtime_info
 from src.extensions import get_extension_manager
 from src.memory.manager import MemoryManager
@@ -83,6 +85,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info(f"Runtime ID: {RUNTIME_ID}")
     logger.info("=" * 60)
 
+    # Register sena.local in the OS hosts file (non-fatal if it fails)
+    try:
+        from src.core.local_domain import setup_sena_local
+
+        local_ok = await setup_sena_local()
+        if local_ok:
+            logger.info("sena.local is configured — accessible at http://sena.local")
+        else:
+            logger.info("sena.local not configured — using http://127.0.0.1:8000")
+    except Exception as _local_err:
+        logger.warning(f"local_domain setup failed (non-fatal): {_local_err}")
+
     # Initialize Sena (only when LLM settings are complete)
     try:
         if llm_settings_complete():
@@ -90,8 +104,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             logger.info("Sena initialized for API server")
         else:
             logger.info("Skipping Sena initialization: LLM settings incomplete")
+    except HTTPException as e:
+        # get_sena() raises HTTPException(503) on init failure — extract the
+        # human-readable message from the detail dict instead of logging the
+        # raw "503: {'error': ..., 'message': ...}" repr.
+        detail = e.detail
+        msg = detail.get("message", str(detail)) if isinstance(detail, dict) else str(detail)
+        logger.error(f"Failed to initialize Sena: {msg}")
     except Exception as e:
-        logger.error(f"Failed to initialize Sena: {e}")
+        logger.error(f"Failed to initialize Sena: {e}", exc_info=True)
 
     yield
 
@@ -110,14 +131,19 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins for dev
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# CORS is intentionally disabled by default.
+# Sena binds to 127.0.0.1 only and is a local desktop app — same-origin
+# enforcement provides no security benefit here. Enable only if you expose
+# the API to a browser-based client on a different origin.
+_cors = settings.api.cors
+if _cors.enabled:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors.origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 
 # Add request logging middleware
@@ -203,14 +229,10 @@ async def health() -> Any:
         # Memory manager status
         try:
             mem_mgr = MemoryManager.get_instance()
-            mem0_connected = await mem_mgr.mem0_client.check_connection()
             memory_status = {
                 "initialized": mem_mgr.initialized,
                 "provider": settings.memory.provider,
-                "mem0_connected": mem0_connected,
             }
-            if settings.memory.provider == "mem0" and not mem0_connected:
-                status = "degraded"
         except Exception:
             memory_status = {"error": "memory manager unavailable"}
 
@@ -293,15 +315,49 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         await ws_manager.disconnect(client_id)
 
 
+@app.exception_handler(SenaException)
+async def sena_exception_handler(request: Request, exc: SenaException) -> JSONResponse:
+    """
+    Convert known SenaException subclasses to appropriate HTTP responses.
+
+    Recoverable errors (LLMConnectionError, etc.) → 503 Service Unavailable.
+    Non-recoverable domain errors → 500 Internal Server Error.
+    Uses WARNING level for recoverable/startup errors so they don't pollute
+    the Logs tab as false 'UNHANDLED EXCEPTION' entries.
+    """
+    status_code = 503 if exc.recoverable else 500
+    if exc.recoverable:
+        logger.warning(f"[{exc.code}] {exc.message} ({request.method} {request.url.path})")
+    else:
+        logger.error(
+            f"[{exc.code}] {exc.message} ({request.method} {request.url.path})",
+            exc_info=True,
+        )
+    return JSONResponse(
+        status_code=status_code,
+        content=exc.to_dict(),
+    )
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    """Global exception handler."""
-    logger.error(f"=== UNHANDLED EXCEPTION ===")
-    logger.error(f"URL: {request.method} {request.url}")
-    logger.error(f"Exception type: {type(exc).__name__}")
-    logger.error(f"Exception message: {exc}")
-    logger.error(f"Full traceback:", exc_info=True)
+    """
+    Catch-all for truly unexpected exceptions.
 
+    Logs as a single ERROR entry (with traceback via exc_info) instead of the
+    previous 5-line format that produced 5 separate rows in the Logs tab.
+    HTTPException subclasses are re-delegated to FastAPI's built-in handler so
+    they are never mis-classified as unhandled errors.
+    """
+    # HTTPExceptions (including our 503s from deps.py) should never reach here,
+    # but guard defensively in case a middleware raises one.
+    if isinstance(exc, HTTPException):
+        return await http_exception_handler(request, exc)
+
+    logger.error(
+        f"Unhandled {type(exc).__name__} on {request.method} {request.url.path}: {exc}",
+        exc_info=True,
+    )
     return JSONResponse(
         status_code=500,
         content={
