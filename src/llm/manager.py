@@ -14,7 +14,7 @@ from typing import Any, AsyncIterator, Callable, Coroutine, Optional
 
 from src.config.settings import get_settings
 from src.core.constants import ModelType, ProcessingStage
-from src.core.exceptions import LLMException, LLMGenerationError
+from src.core.exceptions import LLMConnectionError, LLMException, LLMGenerationError
 from src.llm.models.base import LLMResponse, Message, StreamChunk
 from src.llm.models.model_registry import ModelRegistry
 from src.llm.prompts.system_prompts import get_system_prompt
@@ -55,6 +55,14 @@ class LLMManager:
             return
 
         logger.info("Initializing LLM manager...")
+
+        # Ensure Ollama is running before attempting any model registry work.
+        # This will start Ollama automatically if manage=True and it is not running.
+        from src.llm.ollama_manager import get_ollama_manager
+
+        success, message = await get_ollama_manager().ensure_running(self._settings)
+        if not success:
+            raise LLMConnectionError(f"Cannot connect to Ollama: {message}")
 
         # Initialize model registry
         await self._registry.initialize()

@@ -24,6 +24,15 @@ from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+class OllamaProcessConfig(BaseModel):
+    """Ollama process management configuration."""
+
+    # When True, Sena will start Ollama automatically if it is not running.
+    manage: bool = True
+    # Seconds to wait for Ollama to become ready after launch.
+    startup_timeout: int = 30
+
+
 class LLMModelConfig(BaseModel):
     """Configuration for a single LLM model."""
 
@@ -68,6 +77,8 @@ class LLMConfig(BaseModel):
     # Also accepts Ollama duration strings ("5m", "1h").
     # Note: stored as int in settings.yaml — Pydantic accepts both int and str.
     ollama_keep_alive: int | str = -1
+
+    ollama_process: "OllamaProcessConfig" = Field(default_factory=lambda: OllamaProcessConfig())
 
 
 class Mem0Config(BaseModel):

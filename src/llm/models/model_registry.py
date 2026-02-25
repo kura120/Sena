@@ -116,10 +116,23 @@ class ModelRegistry:
         else:
             logger.warning("Fast model not registered — router interlock skipped.")
 
+        unique_model_count = len({id(v) for v in self._models.values()})
         logger.info(
-            f"Model registry initialized with {len({id(v) for v in self._models.values()})} unique model(s) "
-            f"across {len(self._models)} slot(s)"
+            f"Model registry initialized with {unique_model_count} unique model(s) across {len(self._models)} slot(s)"
         )
+
+        # Verify how many models Ollama actually has resident after preloading.
+        # Non-fatal — just emits a warning if fewer are loaded than expected.
+        try:
+            from src.llm.ollama_manager import get_ollama_manager
+
+            expected_names = list({info.config.name for info in self._models.values() if info.config.name})
+            await get_ollama_manager().verify_concurrency(
+                self._settings.llm.base_url,
+                expected_names,
+            )
+        except Exception as _verify_exc:
+            logger.debug(f"verify_concurrency skipped: {_verify_exc}")
 
     async def register_model(
         self,

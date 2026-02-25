@@ -24,6 +24,9 @@ llm:
       context_window: 16384
 
   ollama_keep_alive: -1
+  ollama_process:
+    manage: true
+    startup_timeout: 30
 memory:
   provider: mem0
   mem0:
