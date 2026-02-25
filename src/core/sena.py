@@ -164,6 +164,11 @@ class Sena:
 
         await close_db()
 
+        # Stop Ollama only if Sena started it (no-op if it was already running)
+        from src.llm.ollama_manager import get_ollama_manager
+
+        await get_ollama_manager().shutdown()
+
         self._initialized = False
         logger.info("Sena shutdown complete")
 

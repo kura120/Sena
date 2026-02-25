@@ -1,6 +1,7 @@
 # src/api/deps.py
 """API Dependencies - Dependency injection for FastAPI routes."""
 
+import time
 from typing import AsyncGenerator, Optional
 
 from src.api.websocket.manager import WebSocketManager, ws_manager
@@ -25,26 +26,52 @@ async def _ws_stage_callback(stage: ProcessingStage, details: str = "") -> None:
 # Global Sena instance
 _sena_instance: Optional[Sena] = None
 
+# Cooldown between failed init attempts — prevents rapid-fire re-init loop
+# when Ollama is unavailable (e.g. still starting up).
+_last_init_attempt: float = 0.0
+_INIT_COOLDOWN_SECONDS: float = 15.0
+
 
 async def get_sena() -> Sena:
-    """Get the global Sena instance."""
-    global _sena_instance
+    """
+    Get the global Sena instance.
 
-    # Also retry if a previous attempt left an instance that never finished
-    # initializing (e.g. Ollama wasn't running at startup).
-    if _sena_instance is None or not _sena_instance.is_initialized:
-        logger.info("Initializing Sena instance for API...")
-        _sena_instance = None  # clean slate so a partial object isn't reused
-        try:
-            _sena_instance = Sena()
-            await _sena_instance.initialize()
-            _sena_instance.set_stage_callback(_ws_stage_callback)
-            logger.info("Sena stage callback wired to WebSocket manager.")
-            logger.info(f"Sena instance initialized successfully. Is initialized: {_sena_instance.is_initialized}")
-        except Exception as e:
-            _sena_instance = None  # reset so the next request can retry
-            logger.error(f"Failed to initialize Sena instance: {type(e).__name__}: {e}", exc_info=True)
-            raise
+    On success: returns the initialized instance (cached).
+    On failure: resets the instance, records the attempt timestamp,
+    and raises. Subsequent callers within the cooldown window receive
+    an immediate error instead of triggering a full re-init cycle —
+    this prevents log-spam loops when Ollama is not yet ready.
+    """
+    global _sena_instance, _last_init_attempt
+
+    # Fast path — already initialized
+    if _sena_instance is not None and _sena_instance.is_initialized:
+        return _sena_instance
+
+    # Cooldown guard — don't hammer re-init while Ollama is starting
+    now = time.monotonic()
+    if _sena_instance is None and (now - _last_init_attempt) < _INIT_COOLDOWN_SECONDS:
+        remaining = _INIT_COOLDOWN_SECONDS - (now - _last_init_attempt)
+        raise RuntimeError(
+            f"Sena initialization is in cooldown ({remaining:.0f}s remaining). "
+            "Previous attempt failed — waiting for Ollama to become ready."
+        )
+
+    _last_init_attempt = now
+    logger.info("Initializing Sena instance for API...")
+    _sena_instance = None  # clean slate so a partial object is never reused
+    try:
+        _sena_instance = Sena()
+        await _sena_instance.initialize()
+        _sena_instance.set_stage_callback(_ws_stage_callback)
+        logger.info("Sena stage callback wired to WebSocket manager.")
+        logger.info(f"Sena instance initialized successfully. Is initialized: {_sena_instance.is_initialized}")
+        # Reset cooldown timer on success so a future restart gets a clean slate
+        _last_init_attempt = 0.0
+    except Exception as e:
+        _sena_instance = None  # reset so the next attempt (after cooldown) can retry
+        logger.error(f"Failed to initialize Sena instance: {type(e).__name__}: {e}", exc_info=True)
+        raise
 
     return _sena_instance
 
