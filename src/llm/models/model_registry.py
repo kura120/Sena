@@ -3,6 +3,10 @@
 Model Registry for Runtime Model Switching
 
 Manages multiple LLM models and enables switching between them.
+
+Router model is always interlocked to the fast model at initialization time.
+There is no separate router configuration — the same OllamaClient instance
+is shared, so classification and generation never cause a VRAM model swap.
 """
 
 import asyncio
@@ -61,54 +65,61 @@ class ModelRegistry:
     Provides:
     - Model registration and initialization
     - Runtime model switching
+    - Per-model locking for safe concurrent access
     - Usage tracking and statistics
+
+    The router model is always interlocked to the fast model — they share
+    the same OllamaClient instance so there is never a VRAM swap between
+    intent classification and response generation.
     """
 
     def __init__(self):
         self._models: dict[ModelType, ModelInfo] = {}
         self._active_model: Optional[ModelType] = None
         self._switch_lock = asyncio.Lock()
+        self._model_locks: dict[ModelType, asyncio.Lock] = {}
         self._last_switch: Optional[datetime] = None
         self._settings = get_settings()
 
     async def initialize(self) -> None:
-        """Initialize all configured models."""
+        """Initialize all configured models and interlock router to fast."""
         logger.info("Initializing model registry...")
 
         settings = self._settings.llm
 
-        # Register each model type
+        # Register each explicitly configured model type.
+        # ROUTER is intentionally excluded here — it is always interlocked
+        # to FAST below and must never get its own separate OllamaClient.
         for model_type in ModelType:
+            if model_type == ModelType.ROUTER:
+                continue
             if model_type.value in settings.models:
                 config = settings.models[model_type.value]
                 await self.register_model(model_type, config)
 
-        # Load the fast model by default
+        # Load the fast model by default so it is warm for the first request.
         if ModelType.FAST in self._models:
             await self.switch_to(ModelType.FAST)
 
-        # Eagerly warm the router model so the first classify() call is not
-        # delayed by a full Ollama load. If it shares a name with the fast
-        # model the slot is already hot — just mark it loaded to skip the
-        # duplicate warm-up round-trip.
-        if ModelType.ROUTER in self._models:
-            router_info = self._models[ModelType.ROUTER]
-            fast_info = self._models.get(ModelType.FAST)
-            if fast_info and router_info.config.name == fast_info.config.name:
-                router_info.client._is_loaded = True
-                logger.info(
-                    f"Router model shares name with fast model "
-                    f"({router_info.config.name}) — skipping duplicate warm-up."
-                )
-            else:
-                try:
-                    logger.info("Pre-loading router model at startup...")
-                    await router_info.client.load()
-                    logger.info("Router model pre-loaded successfully.")
-                except Exception as e:
-                    logger.warning(f"Router model pre-load failed (non-fatal): {e}")
+        # Hard-interlock: router always shares the fast model's ModelInfo.
+        # Same OllamaClient instance → same already-loaded model in Ollama →
+        # zero VRAM swap between classification and generation.
+        if ModelType.FAST in self._models:
+            fast_info = self._models[ModelType.FAST]
+            self._models[ModelType.ROUTER] = fast_info
+            # Share the same per-model lock so concurrent callers deduplicate
+            # correctly regardless of whether they ask for FAST or ROUTER.
+            self._model_locks[ModelType.ROUTER] = self._model_locks[ModelType.FAST]
+            logger.info(
+                f"Router interlocked to fast model ({fast_info.config.name}) — no separate router model or VRAM swap."
+            )
+        else:
+            logger.warning("Fast model not registered — router interlock skipped.")
 
-        logger.info(f"Model registry initialized with {len(self._models)} models")
+        logger.info(
+            f"Model registry initialized with {len({id(v) for v in self._models.values()})} unique model(s) "
+            f"across {len(self._models)} slot(s)"
+        )
 
     async def register_model(
         self,
@@ -119,7 +130,7 @@ class ModelRegistry:
         Register a model with the registry.
 
         Args:
-            model_type: Type of model (fast, critical, code, router)
+            model_type: Type of model (fast, critical, code)
             config: Model configuration
         """
         settings = self._settings.llm
@@ -131,7 +142,7 @@ class ModelRegistry:
             temperature=config.temperature,
             context_window=config.context_window,
             timeout=settings.timeout,
-            keep_alive=self._settings.llm.ollama_keep_alive,
+            keep_alive=str(self._settings.llm.ollama_keep_alive),
         )
 
         self._models[model_type] = ModelInfo(
@@ -140,29 +151,64 @@ class ModelRegistry:
             client=client,
         )
 
+        # Each model type gets its own asyncio.Lock so concurrent callers for
+        # *different* models never block each other.
+        self._model_locks[model_type] = asyncio.Lock()
+
         logger.debug(f"Registered model: {model_type.value} -> {config.name}")
+
+    async def get_client(self, model_type: ModelType) -> BaseLLM:
+        """
+        Return the client for a model type, loading it if necessary.
+
+        Uses a per-model asyncio.Lock so:
+        - Concurrent callers for the *same* model deduplicate the load
+          (only one load() call is made, others wait and reuse the result).
+        - Callers for *different* models never block each other.
+
+        Does NOT update _active_model — use switch_to() for that.
+
+        Args:
+            model_type: Type of model to get
+
+        Returns:
+            The model's BaseLLM client, guaranteed loaded.
+
+        Raises:
+            LLMModelNotFoundError: If model_type is not registered.
+        """
+        if model_type not in self._models:
+            raise LLMModelNotFoundError(model_type.value)
+
+        model_info = self._models[model_type]
+        lock = self._model_locks.get(model_type, self._switch_lock)
+
+        async with lock:
+            if not model_info.client.is_loaded:
+                logger.info(f"Loading model: {model_type.value} ({model_info.config.name})")
+                await model_info.client.load()
+
+        return model_info.client
 
     async def switch_to(self, model_type: ModelType, force: bool = False) -> BaseLLM:
         """
-        Switch to a different model.
+        Switch to a different model, updating the active model pointer.
 
         Args:
             model_type: Type of model to switch to
-            force: Force switch even if cooldown hasn't passed
+            force: Unused, kept for API compatibility
 
         Returns:
             The switched-to model client
         """
         async with self._switch_lock:
-            # Check if model exists
             if model_type not in self._models:
                 raise LLMModelNotFoundError(model_type.value)
 
             model_info = self._models[model_type]
 
-            # Load model if not already loaded
             if not model_info.client.is_loaded:
-                logger.info(f"Loading model: {model_type.value}")
+                logger.info(f"Loading model: {model_type.value} ({model_info.config.name})")
                 await model_info.client.load()
 
             self._active_model = model_type
@@ -174,7 +220,7 @@ class ModelRegistry:
 
     def get_model(self, model_type: ModelType) -> Optional[BaseLLM]:
         """
-        Get a model by type without switching.
+        Get a model client by type without switching or loading.
 
         Args:
             model_type: Type of model to get
@@ -216,8 +262,16 @@ class ModelRegistry:
 
     async def health_check(self) -> dict[str, bool]:
         """Check health of all registered models."""
+        seen: set[int] = set()
         results = {}
         for model_type, info in self._models.items():
+            client_id = id(info.client)
+            if client_id in seen:
+                # Interlocked slot — reuse result from the primary slot
+                primary = next(mt for mt, mi in self._models.items() if id(mi.client) == client_id and mt != model_type)
+                results[model_type.value] = results.get(primary.value, False)
+                continue
+            seen.add(client_id)
             try:
                 results[model_type.value] = await info.client.health_check()
             except Exception:
@@ -225,10 +279,15 @@ class ModelRegistry:
         return results
 
     async def shutdown(self) -> None:
-        """Shutdown all models."""
+        """Shutdown all models, deduplicating shared clients."""
         logger.info("Shutting down model registry...")
 
+        seen: set[int] = set()
         for model_type, info in self._models.items():
+            client_id = id(info.client)
+            if client_id in seen:
+                continue  # Already shut down via shared reference
+            seen.add(client_id)
             if info.client.is_loaded:
                 try:
                     await info.client.unload()
@@ -236,6 +295,7 @@ class ModelRegistry:
                     logger.warning(f"Error unloading {model_type.value}: {e}")
 
         self._models.clear()
+        self._model_locks.clear()
         self._active_model = None
 
         logger.info("Model registry shutdown complete")

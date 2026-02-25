@@ -60,12 +60,6 @@ class LLMConfig(BaseModel):
                 temperature=0.3,
                 context_window=16384,
             ),
-            "router": LLMModelConfig(
-                name="",
-                max_tokens=1024,
-                temperature=0.2,
-                context_window=4096,
-            ),
         }
     )
 
