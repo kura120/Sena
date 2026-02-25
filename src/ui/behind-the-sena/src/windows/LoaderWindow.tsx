@@ -233,18 +233,40 @@ export function LoaderWindow() {
     if (settingsReadyRef.current) return true;
     try {
       const data = await fetchJson<LlmSettingsResponse>("/api/v1/settings/llm");
+
+      // ── Diagnostic: log exactly what the API returned so the output panel
+      // shows the real values instead of silently looping.
+      const provider = data.data?.provider ?? "(missing)";
+      const fast = data.data?.models?.fast ?? "(missing/null)";
+      const critical = data.data?.models?.critical ?? "(missing/null)";
+      const code = data.data?.models?.code ?? "(missing/null)";
+      pushLog(
+        `[settings-gate] provider=${provider} fast=${fast} critical=${critical} code=${code}`,
+      );
+
       if (isSettingsComplete(data)) {
         settingsReadyRef.current = true;
         setAwaitingSetup(false);
+        pushLog(
+          "[settings-gate] ✓ settings complete — proceeding to health check",
+        );
         return true;
       }
+
+      pushLog(
+        `[settings-gate] ✗ gate failed — fast model must be set (provider="${provider}", fast="${fast}")`,
+      );
+
       if (!setupWindowOpenRef.current) {
         setupWindowOpenRef.current = true;
         setAwaitingSetup(true);
         void window.sena.openSetupWindow?.();
       }
       return false;
-    } catch {
+    } catch (err) {
+      pushLog(
+        `[settings-gate] fetch error — ${err instanceof Error ? err.message : String(err)}`,
+      );
       return false;
     }
   };
