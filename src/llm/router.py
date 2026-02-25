@@ -63,9 +63,14 @@ class IntentRouter:
     then maps intent to the best model for handling.
     """
 
-    # How many consecutive load failures before the circuit opens
-    _CIRCUIT_FAILURE_THRESHOLD: int = 3
-    # How long (seconds) to keep the circuit open before retrying
+    # How many consecutive load failures before the circuit opens.
+    # Set to 1 so the very first router-model load failure immediately trips
+    # the breaker and routes to the fast model — avoids paying the full
+    # cold-start cost (42 s for mistral:7b-instruct) multiple times before
+    # falling back.
+    _CIRCUIT_FAILURE_THRESHOLD: int = 1
+    # How long (seconds) to keep the circuit open before retrying.
+    # 5 minutes gives Ollama time to settle before we try the router again.
     _CIRCUIT_COOLDOWN: float = 300.0  # 5 minutes
 
     def __init__(self) -> None:
@@ -269,26 +274,22 @@ class IntentRouter:
             return self._create_result(IntentType.GENERAL_CONVERSATION, confidence=0.3)
 
         try:
-            # Get router model
-            router_model = self._registry.get_model(ModelType.ROUTER)
-
             # Circuit breaker: if the router model has failed too many times
-            # recently, skip straight to the fast model instead of blocking.
-            circuit_open = time.monotonic() < self._router_circuit_open_until
-
-            if not router_model or circuit_open:
-                if circuit_open:
-                    logger.debug("Router model circuit open — using fast model for classification")
-                else:
-                    logger.warning("Router model not available, using fast model")
-                router_model = self._registry.get_model(ModelType.FAST)
-                if not router_model:
-                    return self._create_result(IntentType.GENERAL_CONVERSATION, confidence=0.3)
-            elif not router_model.is_loaded:
+            # recently, skip straight to the fast model without waiting.
+            if time.monotonic() < self._router_circuit_open_until:
+                logger.debug("Router circuit open — using fast model for classification")
                 try:
-                    await router_model.load()
-                    # Successful load — reset circuit breaker
-                    self._router_failure_count = 0
+                    router_model = await self._registry.get_client(ModelType.FAST)
+                except Exception:
+                    return self._create_result(IntentType.GENERAL_CONVERSATION, confidence=0.3)
+            else:
+                try:
+                    # get_client() calls ModelInfo.ensure_loaded() which holds the
+                    # per-model asyncio.Lock — concurrent callers for the same model
+                    # type are safely deduplicated; callers for *different* model types
+                    # never block each other (no global lock).
+                    router_model = await self._registry.get_client(ModelType.ROUTER)
+                    self._router_failure_count = 0  # reset on success
                 except Exception as load_err:
                     self._router_failure_count += 1
                     logger.warning(
@@ -302,9 +303,9 @@ class IntentRouter:
                             f"{self._CIRCUIT_COOLDOWN:.0f}s — "
                             "all classification will use fast model until then"
                         )
-                    # Fall back to fast model for this request
-                    router_model = self._registry.get_model(ModelType.FAST)
-                    if not router_model:
+                    try:
+                        router_model = await self._registry.get_client(ModelType.FAST)
+                    except Exception:
                         return self._create_result(IntentType.GENERAL_CONVERSATION, confidence=0.3)
 
             # Build classification prompt
