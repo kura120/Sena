@@ -30,8 +30,6 @@ class LLMSettingsRequest(BaseModel):
     provider: Optional[str] = Field(None, description="LLM provider (e.g., ollama)")
     base_url: Optional[str] = Field(None, description="Provider base URL")
     timeout: Optional[int] = Field(None, ge=1, description="Request timeout in seconds")
-    allow_runtime_switch: Optional[bool] = Field(None, description="Allow switching models at runtime")
-    switch_cooldown: Optional[int] = Field(None, ge=0, description="Cooldown between model switches (seconds)")
     # Named model slots
     fast: Optional[str] = Field(None, description="Fast-response model name")
     critical: Optional[str] = Field(None, description="Critical/thinking model name")
@@ -135,8 +133,6 @@ async def get_llm_settings() -> dict[str, Any]:
                 "provider": s.llm.provider,
                 "base_url": s.llm.base_url,
                 "timeout": s.llm.timeout,
-                "allow_runtime_switch": s.llm.allow_runtime_switch,
-                "switch_cooldown": s.llm.switch_cooldown,
                 "models": models,
             },
         }
@@ -313,11 +309,6 @@ async def update_llm_settings(payload: LLMSettingsRequest) -> dict[str, Any]:
             s.llm.base_url = payload.base_url
         if payload.timeout is not None:
             s.llm.timeout = payload.timeout
-        if payload.allow_runtime_switch is not None:
-            s.llm.allow_runtime_switch = payload.allow_runtime_switch
-        if payload.switch_cooldown is not None:
-            s.llm.switch_cooldown = payload.switch_cooldown
-
         # Named model slots
         for slot, value in {
             "fast": payload.fast,

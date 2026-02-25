@@ -158,15 +158,6 @@ class ModelRegistry:
             if model_type not in self._models:
                 raise LLMModelNotFoundError(model_type.value)
 
-            # Check cooldown
-            if not force and self._last_switch:
-                cooldown = self._settings.llm.switch_cooldown
-                elapsed = (datetime.now() - self._last_switch).total_seconds()
-                if elapsed < cooldown:
-                    logger.debug(f"Switch cooldown active, {cooldown - elapsed:.1f}s remaining")
-                    if self._active_model:
-                        return self._models[self._active_model].client
-
             model_info = self._models[model_type]
 
             # Load model if not already loaded
