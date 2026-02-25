@@ -35,6 +35,10 @@ type ChatMessage = {
   timestamp: string;
   content: string;
   thinkingStages?: ThinkingStage[];
+  llmThinking?: {
+    think_content: string;
+    brief: string;
+  };
 };
 
 type ThinkingStage = {
@@ -78,6 +82,7 @@ const STAGE_LABELS: Record<string, string> = {
   memory_retrieval: "Retrieving memories",
   extension_check: "Checking extensions",
   extension_execution: "Running extensions",
+  reasoning: "Reasoning",
   llm_processing: "Generating response",
   llm_streaming: "Streaming response",
   post_processing: "Post-processing",
@@ -259,6 +264,114 @@ const ProcessingPanel: React.FC<ProcessingPanelProps> = ({
   );
 };
 
+// ─── ThinkingPanel ────────────────────────────────────────────────────────────
+
+type ThinkingPanelProps = {
+  thinking: { think_content: string; brief: string };
+  isLive?: boolean;
+  open?: boolean;
+  onToggle?: (open: boolean) => void;
+};
+
+const ThinkingPanel: React.FC<ThinkingPanelProps> = ({
+  thinking,
+  isLive = false,
+  open: controlledOpen,
+  onToggle,
+}) => {
+  const [internalOpen, setInternalOpen] = useState(true);
+  const isControlled = controlledOpen !== undefined;
+  const open = isControlled ? controlledOpen : internalOpen;
+
+  const toggle = () => {
+    const next = !open;
+    if (isControlled) {
+      onToggle?.(next);
+    } else {
+      setInternalOpen(next);
+    }
+  };
+
+  // Auto-collapse once live thinking stops
+  useEffect(() => {
+    if (isControlled) return;
+    if (!isLive && (thinking.think_content || thinking.brief)) {
+      const t = setTimeout(() => setInternalOpen(false), 2000);
+      return () => clearTimeout(t);
+    }
+  }, [isLive, thinking.think_content, thinking.brief, isControlled]);
+
+  if (!isLive && !thinking.think_content && !thinking.brief) return null;
+
+  return (
+    <div className="mt-2 rounded-lg border border-purple-700/40 bg-purple-950/20 text-xs overflow-hidden">
+      <button
+        onClick={toggle}
+        className="w-full flex items-center gap-2 px-3 py-2 text-purple-300 hover:text-purple-100 transition-colors"
+      >
+        <Sparkles className="w-3.5 h-3.5 text-purple-400 flex-shrink-0" />
+        <span className="font-medium">
+          {isLive ? "Reasoning…" : "Reasoning"}
+        </span>
+        {isLive && (
+          <span className="flex gap-0.5 ml-1">
+            {[0, 0.15, 0.3].map((delay, i) => (
+              <motion.span
+                key={i}
+                className="w-1 h-1 rounded-full bg-purple-400"
+                animate={{ opacity: [0.3, 1, 0.3] }}
+                transition={{ repeat: Infinity, duration: 1, delay }}
+              />
+            ))}
+          </span>
+        )}
+        <span className="ml-auto">
+          {open ? (
+            <ChevronUp className="w-3.5 h-3.5" />
+          ) : (
+            <ChevronDown className="w-3.5 h-3.5" />
+          )}
+        </span>
+      </button>
+
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="overflow-hidden"
+          >
+            <div className="px-3 pb-3 space-y-2 border-t border-purple-700/30">
+              {thinking.think_content && (
+                <div className="pt-2 space-y-1">
+                  <p className="text-purple-400/70 uppercase tracking-widest text-[10px] font-semibold">
+                    Chain of thought
+                  </p>
+                  <pre className="whitespace-pre-wrap break-words text-slate-400 leading-relaxed max-h-48 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-700">
+                    {thinking.think_content}
+                  </pre>
+                </div>
+              )}
+              {thinking.brief && (
+                <div className="pt-1 space-y-1">
+                  <p className="text-purple-400/70 uppercase tracking-widest text-[10px] font-semibold">
+                    Response brief
+                  </p>
+                  <p className="text-slate-300 leading-relaxed">
+                    {thinking.brief}
+                  </p>
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+};
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export const Chat: React.FC = () => {
@@ -277,6 +390,17 @@ export const Chat: React.FC = () => {
   // Ref mirror — always holds the latest accumulated stages so sendMessage
   // can read the current value without being subject to stale closure capture.
   const liveStagesRef = useRef<ThinkingStage[]>([]);
+
+  // Live reasoning model output (llm_thinking WS event) during current request.
+  const [liveThinking, setLiveThinking] = useState<{
+    think_content: string;
+    brief: string;
+  } | null>(null);
+  // Ref mirror so sendMessage captures the latest value without stale closure.
+  const liveThinkingRef = useRef<{
+    think_content: string;
+    brief: string;
+  } | null>(null);
 
   // Per-message thinking-panel open state (controlled, keyed by message id).
   // Starts true (open) when a message is created; user can toggle at any time.
@@ -390,6 +514,16 @@ export const Chat: React.FC = () => {
             return next;
           });
         }
+      } else if (payload.type === "llm_thinking") {
+        const data = payload.data as
+          | { think_content?: string; brief?: string }
+          | undefined;
+        const thinking = {
+          think_content: data?.think_content ?? "",
+          brief: data?.brief ?? "",
+        };
+        setLiveThinking(thinking);
+        liveThinkingRef.current = thinking;
       }
     };
 
@@ -507,6 +641,8 @@ export const Chat: React.FC = () => {
       setInput("");
       setLiveStages([]);
       liveStagesRef.current = [];
+      setLiveThinking(null);
+      liveThinkingRef.current = null;
       setLoading(true);
 
       try {
@@ -529,6 +665,7 @@ export const Chat: React.FC = () => {
           },
           [],
         );
+        const capturedThinking = liveThinkingRef.current;
         const msgId = (Date.now() + 1).toString();
 
         const senaMsg: ChatMessage = {
@@ -538,6 +675,7 @@ export const Chat: React.FC = () => {
           content:
             data.response ?? data.message ?? data.content ?? "No response",
           thinkingStages: capturedStages,
+          llmThinking: capturedThinking ?? undefined,
         };
 
         // Start the per-message panel in open state so the user sees the
@@ -580,9 +718,19 @@ export const Chat: React.FC = () => {
         setLoading(false);
         setLiveStages([]);
         liveStagesRef.current = [];
+        setLiveThinking(null);
+        liveThinkingRef.current = null;
       }
     },
-    [input, loading, activeSession, messages, liveStagesRef, tryAutoTitle],
+    [
+      input,
+      loading,
+      activeSession,
+      messages,
+      liveStagesRef,
+      liveThinkingRef,
+      tryAutoTitle,
+    ],
   );
 
   // ── Edit last message ──────────────────────────────────────────────────────────
@@ -942,7 +1090,24 @@ export const Chat: React.FC = () => {
                               {msg.timestamp}
                             </span>
 
-                            {/* Thinking panel attached to Sena messages — controlled open state */}
+                            {/* ThinkingPanel — reasoning model chain-of-thought (above ProcessingPanel) */}
+                            {msg.role === "sena" && msg.llmThinking && (
+                              <div className="w-full max-w-sm">
+                                <ThinkingPanel
+                                  thinking={msg.llmThinking}
+                                  isLive={false}
+                                  open={thinkingOpen[`think-${msg.id}`] ?? true}
+                                  onToggle={(next) =>
+                                    setThinkingOpen((prev) => ({
+                                      ...prev,
+                                      [`think-${msg.id}`]: next,
+                                    }))
+                                  }
+                                />
+                              </div>
+                            )}
+
+                            {/* ProcessingPanel — pipeline stages */}
                             {msg.role === "sena" &&
                               msg.thinkingStages &&
                               msg.thinkingStages.length > 0 && (
@@ -1000,6 +1165,13 @@ export const Chat: React.FC = () => {
                         ))}
                       </div>
                     </div>
+
+                    {/* Live ThinkingPanel — shows reasoning model output as it arrives */}
+                    {liveThinking && (
+                      <div className="w-full max-w-sm">
+                        <ThinkingPanel thinking={liveThinking} isLive={true} />
+                      </div>
+                    )}
 
                     {/* Live processing stages — always mount while loading so
                         "Sena is thinking…" appears before the first stage arrives */}

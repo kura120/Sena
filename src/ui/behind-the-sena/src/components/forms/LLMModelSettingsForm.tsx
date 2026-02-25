@@ -15,6 +15,8 @@ export type ModelSettings = {
     code: string | null;
     router: string | null;
   };
+  reasoning_model: string | null;
+  reasoning_enabled: boolean;
 };
 
 type OllamaModelsResponse = {
@@ -34,6 +36,8 @@ type SavePayload = {
   critical: string | null;
   code: string | null;
   router: string | null;
+  reasoning_model: string | null;
+  reasoning_enabled: boolean;
 };
 
 export interface LLMModelSettingsFormProps {
@@ -82,6 +86,8 @@ export function LLMModelSettingsForm({
   const timeoutValue = value?.timeout ?? 120;
   const allowRuntimeSwitch = value?.allow_runtime_switch ?? true;
   const switchCooldown = value?.switch_cooldown ?? 5;
+  const reasoningModel = value?.reasoning_model ?? null;
+  const reasoningEnabled = value?.reasoning_enabled ?? false;
 
   const sortedModels = useMemo(
     () => [...availableModels].sort((a, b) => a.localeCompare(b)),
@@ -101,6 +107,14 @@ export function LLMModelSettingsForm({
         code: next.models?.code ?? value?.models.code ?? null,
         router: next.models?.router ?? value?.models.router ?? null,
       },
+      reasoning_model:
+        next.reasoning_model !== undefined
+          ? next.reasoning_model
+          : reasoningModel,
+      reasoning_enabled:
+        next.reasoning_enabled !== undefined
+          ? next.reasoning_enabled
+          : reasoningEnabled,
     };
     onChange(merged);
   };
@@ -154,6 +168,8 @@ export function LLMModelSettingsForm({
         critical: value.models.critical,
         code: value.models.code,
         router: value.models.router,
+        reasoning_model: value.reasoning_model,
+        reasoning_enabled: value.reasoning_enabled,
       };
       await fetchJson("/api/v1/settings/llm", {
         method: "POST",
@@ -256,6 +272,62 @@ export function LLMModelSettingsForm({
             </React.Fragment>
           ))}
         </div>
+      </div>
+
+      {/* Reasoning model card */}
+      <div className="bg-slate-900/50 rounded-lg border border-slate-800/70 p-4 space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm text-slate-50 font-semibold">
+              Reasoning Pipeline
+            </p>
+            <p className="text-xs text-slate-500">
+              Chain-of-thought model that reasons before the fast model
+              responds.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={reasoningEnabled}
+            onChange={(v) => updateValue({ reasoning_enabled: v })}
+            label=""
+            description=""
+          />
+        </div>
+
+        {reasoningEnabled && (
+          <div className="grid grid-cols-1 lg:grid-cols-[200px_1fr] gap-3 items-center">
+            <div>
+              <p className="text-xs text-slate-400 uppercase tracking-widest">
+                Reasoning Model
+              </p>
+              <p className="text-[11px] text-slate-600 mt-0.5">
+                Used for chain-of-thought analysis before the fast model
+              </p>
+            </div>
+            <select
+              value={reasoningModel ?? ""}
+              onChange={(e) =>
+                updateValue({ reasoning_model: e.target.value || null })
+              }
+              className="px-3 py-2 rounded bg-slate-900 border border-slate-800 text-slate-100 text-sm"
+            >
+              <option value="">
+                {isLoadingModels ? "Loading models…" : "Select reasoning model"}
+              </option>
+              {sortedModels.map((model) => (
+                <option key={model} value={model}>
+                  {model}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {!reasoningEnabled && (
+          <p className="text-xs text-slate-600 italic">
+            Enable to select a chain-of-thought model (e.g. deepseek-r1).
+          </p>
+        )}
       </div>
 
       {/* Advanced settings (collapsible) */}

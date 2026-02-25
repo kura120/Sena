@@ -90,12 +90,34 @@ class ModelRegistry:
         # Register each explicitly configured model type.
         # ROUTER is intentionally excluded here — it is always interlocked
         # to FAST below and must never get its own separate OllamaClient.
+        # REASONING is also excluded from this loop — it is registered below
+        # from its own dedicated config field (not inside the models dict).
         for model_type in ModelType:
-            if model_type == ModelType.ROUTER:
+            if model_type in (ModelType.ROUTER, ModelType.REASONING):
                 continue
             if model_type.value in settings.models:
                 config = settings.models[model_type.value]
                 await self.register_model(model_type, config)
+
+        # Register the REASONING model from its dedicated config field.
+        # It is intentionally separate from the models dict because it has
+        # its own enable/disable toggle and a different default context window.
+        reasoning_name: str = getattr(settings, "reasoning_model", "")
+        reasoning_enabled: bool = getattr(settings, "reasoning_enabled", False)
+        if reasoning_enabled and reasoning_name:
+            reasoning_cfg = LLMModelConfig(
+                name=reasoning_name,
+                max_tokens=8192,
+                temperature=0.6,
+                context_window=32768,
+            )
+            await self.register_model(ModelType.REASONING, reasoning_cfg)
+            logger.info(f"Registered reasoning model: {reasoning_name}")
+        else:
+            logger.info(
+                "Reasoning model not registered "
+                f"(reasoning_enabled={reasoning_enabled}, reasoning_model={reasoning_name!r})"
+            )
 
         # Load the fast model by default so it is warm for the first request.
         if ModelType.FAST in self._models:
@@ -155,7 +177,7 @@ class ModelRegistry:
             temperature=config.temperature,
             context_window=config.context_window,
             timeout=settings.timeout,
-            keep_alive=str(self._settings.llm.ollama_keep_alive),
+            keep_alive=self._settings.llm.ollama_keep_alive,
         )
 
         self._models[model_type] = ModelInfo(

@@ -80,13 +80,11 @@ class LLMConfig(BaseModel):
 
     ollama_process: "OllamaProcessConfig" = Field(default_factory=lambda: OllamaProcessConfig())
 
-
-class Mem0Config(BaseModel):
-    """mem0 configuration settings."""
-
-    mode: str = "library"
-    api_key: Optional[str] = None
-    base_url: Optional[str] = None
+    # Reasoning model (chain-of-thought, used before FAST model).
+    # Empty string = disabled even if reasoning_enabled=True.
+    # Configure via Settings → LLM → Reasoning Model.
+    reasoning_model: str = ""
+    reasoning_enabled: bool = False
 
 
 class VectorDBConfig(BaseModel):
@@ -149,8 +147,7 @@ class PersonalityConfig(BaseModel):
 class MemoryConfig(BaseModel):
     """Complete memory configuration."""
 
-    provider: str = "mem0"
-    mem0: Mem0Config = Field(default_factory=Mem0Config)
+    provider: str = "local"
     vector_db: VectorDBConfig = Field(default_factory=VectorDBConfig)
     embeddings: EmbeddingsConfig = Field(default_factory=EmbeddingsConfig)
     short_term: ShortTermMemoryConfig = Field(default_factory=ShortTermMemoryConfig)

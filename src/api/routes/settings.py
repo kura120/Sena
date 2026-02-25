@@ -35,6 +35,9 @@ class LLMSettingsRequest(BaseModel):
     critical: Optional[str] = Field(None, description="Critical/thinking model name")
     code: Optional[str] = Field(None, description="Coding model name")
     router: Optional[str] = Field(None, description="Router model name")
+    # Reasoning pipeline
+    reasoning_model: Optional[str] = Field(None, description="Chain-of-thought reasoning model name")
+    reasoning_enabled: Optional[bool] = Field(None, description="Enable reasoning step before fast model")
 
 
 class MemorySettingsRequest(BaseModel):
@@ -134,6 +137,8 @@ async def get_llm_settings() -> dict[str, Any]:
                 "base_url": s.llm.base_url,
                 "timeout": s.llm.timeout,
                 "models": models,
+                "reasoning_model": s.llm.reasoning_model,
+                "reasoning_enabled": s.llm.reasoning_enabled,
             },
         }
     except Exception as e:
@@ -318,6 +323,12 @@ async def update_llm_settings(payload: LLMSettingsRequest) -> dict[str, Any]:
         }.items():
             if value is not None and slot in s.llm.models:
                 s.llm.models[slot].name = value
+
+        # Reasoning pipeline fields
+        if payload.reasoning_model is not None:
+            s.llm.reasoning_model = payload.reasoning_model
+        if payload.reasoning_enabled is not None:
+            s.llm.reasoning_enabled = payload.reasoning_enabled
 
         saved_path = _persist(s)
         logger.info(f"LLM settings updated and saved to {saved_path}")
