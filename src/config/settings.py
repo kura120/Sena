@@ -230,6 +230,10 @@ class CORSConfig(BaseModel):
             "http://127.0.0.1:3000",
             "http://127.0.0.1:3001",
             "http://127.0.0.1:5173",
+            # Electron windows loaded from file:// send Origin: null.
+            # Without this entry the CORS middleware blocks every response
+            # to the loader/dashboard when running the packaged app.
+            "null",
         ]
     )
 
