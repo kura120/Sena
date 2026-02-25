@@ -69,12 +69,11 @@ class LLMConfig(BaseModel):
         }
     )
 
-    allow_runtime_switch: bool = True
-    switch_cooldown: int = 5
     # How long Ollama keeps the model loaded after the last request.
-    # "-1" = indefinite (never evict while Ollama is running).
-    # Accepts Ollama duration strings ("5m", "1h") or integer seconds.
-    ollama_keep_alive: str = "-1"
+    # -1 = indefinite (never evict while Ollama is running).
+    # Also accepts Ollama duration strings ("5m", "1h").
+    # Note: stored as int in settings.yaml — Pydantic accepts both int and str.
+    ollama_keep_alive: int | str = -1
 
 
 class Mem0Config(BaseModel):
