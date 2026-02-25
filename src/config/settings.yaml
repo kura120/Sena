@@ -27,8 +27,7 @@ llm:
       max_tokens: 1024
       temperature: 0.2
       context_window: 4096
-  allow_runtime_switch: true
-  switch_cooldown: 5
+  ollama_keep_alive: -1
 memory:
   provider: mem0
   mem0:
@@ -61,27 +60,27 @@ extensions:
   security:
     sandbox_enabled: true
     allowed_imports:
-    - os
-    - sys
-    - json
-    - re
-    - datetime
-    - pathlib
-    - typing
-    - collections
-    - itertools
-    - functools
-    - math
-    - random
-    - string
-    - urllib
-    - base64
+      - os
+      - sys
+      - json
+      - re
+      - datetime
+      - pathlib
+      - typing
+      - collections
+      - itertools
+      - functools
+      - math
+      - random
+      - string
+      - urllib
+      - base64
     blocked_functions:
-    - eval
-    - exec
-    - compile
-    - __import__
-    - open
+      - eval
+      - exec
+      - compile
+      - __import__
+      - open
     max_execution_time: 30
     max_memory_mb: 256
   generation:
@@ -95,10 +94,10 @@ api:
   cors:
     enabled: true
     origins:
-    - http://localhost:3000
-    - http://localhost:3001
-    - http://127.0.0.1:3000
-    - http://127.0.0.1:3001
+      - http://localhost:3000
+      - http://localhost:3001
+      - http://127.0.0.1:3000
+      - http://127.0.0.1:3001
   rate_limit:
     enabled: false
     requests_per_minute: 60
